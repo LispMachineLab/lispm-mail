@@ -149,9 +149,10 @@ applications, can be named here instead."
   :type '(choice (const :tag "None" nil) string)
   :group 'lispm-mail)
 
-(defcustom lispm-mail-google-client-id nil
+(defcustom lispm-mail-google-client-id
+  "232170540593-m7o557hrusmbalsqorhqd4ckikmu4u4v.apps.googleusercontent.com"
   "The client ID Google knows LispM Mail by, to sign Gmail and Google
-Workspace accounts in, or nil while LispM Mail has none.
+Workspace accounts in, or nil for none.
 An OAuth client of Google Cloud for desktop applications, allowed
 Gmail's scope, can be named here instead, with its secret in
 `lispm-mail-google-client-secret'."
