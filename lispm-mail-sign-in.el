@@ -24,7 +24,7 @@
 ;;; Commentary:
 
 ;; Some providers let mail programs in only through their own sign-in
-;; page, Outlook.com among them: the program is never given the
+;; page, Outlook.com and Gmail among them: the program is never given the
 ;; account's password, but a token, which the page gives once its
 ;; owner has allowed the program in.  LispM Mail opens the page in the
 ;; browser, where its owner is likely signed in already, as OAuth 2.0
@@ -202,6 +202,7 @@ the sign-in up, CALLBACK then never called."
                (setq exchanging t)
                (lispm-mail-sign-in--exchange
                 kind `(("client_id" ,client-id)
+                       ("client_secret" ,(lispm-mail-sign-in-client-secret kind))
                        ("grant_type" "authorization_code")
                        ("code" ,(funcall said "code"))
                        ("redirect_uri" ,redirect)
@@ -226,12 +227,12 @@ the sign-in up, CALLBACK then never called."
                             `(("client_id" ,client-id)
                               ("response_type" "code")
                               ("redirect_uri" ,redirect)
-                              ("response_mode" "query")
                               ("scope" ,(plist-get provider :scope))
                               ("state" ,state)
                               ("code_challenge" ,(lispm-mail-sign-in-challenge verifier))
                               ("code_challenge_method" "S256")
-                              ("login_hint" ,address)))))
+                              ("login_hint" ,address)
+                              ,@(plist-get provider :parameters)))))
         (error (stop) (signal (car err) (cdr err))))
       (setq timer (run-at-time lispm-mail-sign-in-timeout nil
                                #'finish nil "Signing in took too long: try again"))

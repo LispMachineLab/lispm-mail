@@ -685,13 +685,7 @@ Once signed in, the servers are logged in to, to see that they work."
   (when (and lispm-mail-account--editing (string-empty-p (or value "")))
     (lispm-mail-settings--note "Leave it empty to keep the password kept."))
   (when-let* ((note (plist-get lispm-mail-account--provider :note)))
-    (lispm-mail-settings--note note))
-  (when-let* ((url (plist-get lispm-mail-account--provider :password-url)))
-    (widget-insert (propertize " " 'display `(space :align-to ,lispm-mail-settings-column)))
-    (lispm-mail-settings--button (or (plist-get lispm-mail-account--provider :password-button)
-                                     "Make a Password…")
-                                 (lambda () (funcall lispm-mail-sign-in-browse-function url)))
-    (widget-insert "\n")))
+    (lispm-mail-settings--note note)))
 
 (defun lispm-mail-account--status-text ()
   "Return what Test Connection found, as the form says it."

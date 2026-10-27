@@ -29,17 +29,17 @@ Nothing else: the rest is Emacs.
 =M-x lispm-mail= opens the window; with no account yet, it offers to add one.  The form asks
 for a name, an address and a password, and fills the servers in from the address: those of the
 providers most people have are known, others are asked of Thunderbird's database of providers,
-and any can be typed.  Under the password, what the provider asks for is said: Gmail, iCloud,
-Yahoo and AOL want an app password, which a button opens their page to make.  *Test Connection*
-logs in to both servers and says how it went; *Save* keeps the account.
+and any can be typed.  Under the password, what the provider asks for is said.  *Test
+Connection* logs in to both servers and says how it went; *Save* keeps the account.
 
-Outlook.com, Hotmail, Live and MSN let mail programs in only through Microsoft's own page, and
-their form has *Sign In with Microsoft…* where the others have a password.  It opens the page
-in your browser, where you are likely signed in already; there you let LispM Mail read and send
-the account's mail, and the browser comes back to LispM Mail, on a port of this computer only,
-with a code.  LispM Mail exchanges it for a token, which logs in to the servers for an hour, and
-another, with which it gets the next; it never sees the password.  This is OAuth 2.0 as a
-program on a computer does it, with PKCE, the servers logged in to by SASL XOAUTH2.
+Gmail and Google Workspace sign in on Google's own page, and Outlook.com, Hotmail, Live and MSN
+on Microsoft's: their form has *Sign In with Google…* or *Sign In with Microsoft…* where the
+others have a password.  It opens the page in your browser, where you are likely signed in
+already; there you let LispM Mail read and send the account's mail, and the browser comes back
+to LispM Mail, on a port of this computer only, with a code.  LispM Mail exchanges it for a
+token, which logs in to the servers for an hour, and another, with which it gets the next; it
+never sees the password.  This is OAuth 2.0 as a program on a computer does it, with PKCE, the
+servers logged in to by SASL XOAUTH2.
 
 The password, or the token signing an account in, is kept in the macOS Keychain, given to its
 =security= program on its input, never on its command line; elsewhere, with auth-source, in the

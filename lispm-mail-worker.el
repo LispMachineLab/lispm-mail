@@ -212,8 +212,9 @@ why when it refuses."
        (t (error "The sign-in server did not answer"))))))
 
 (defun lispm-mail-worker-token-request (fields)
-  "Return FIELDS, ((NAME VALUE) ...), as a token request's body."
-  (url-build-query-string fields))
+  "Return FIELDS, ((NAME VALUE) ...), as a token request's body,
+without those whose VALUE is nil."
+  (url-build-query-string (seq-filter #'cadr fields)))
 
 (defun lispm-mail-worker-access-token (oauth)
   "Return an access token for OAUTH, a server's :oauth: the one it gives,
@@ -226,6 +227,7 @@ or one got with its refresh token, kept until it expires."
              (url-request-extra-headers '(("Content-Type" . "application/x-www-form-urlencoded")))
              (url-request-data (lispm-mail-worker-token-request
                                 `(("client_id" ,(plist-get oauth :client-id))
+                                  ("client_secret" ,(plist-get oauth :client-secret))
                                   ("grant_type" "refresh_token")
                                   ("refresh_token" ,refresh)
                                   ("scope" ,(plist-get oauth :scope)))))
