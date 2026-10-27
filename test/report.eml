@@ -1,0 +1,39 @@
+From: "Grace Hopper" <grace@navy.mil>
+To: ada@example.com
+Cc: "Alan Turing" <alan@bletchley.uk>
+Subject: Quarterly report
+Date: Mon, 26 Oct 2026 14:13:00 +0800
+Message-ID: <1@navy.mil>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============1649326770960430611=="
+
+--===============1649326770960430611==
+Content-Type: multipart/alternative;
+ boundary="===============3771344109372651446=="
+
+--===============3771344109372651446==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Here is the report. The numbers for Q3 are on page 2.
+
+Grace
+
+--===============3771344109372651446==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+MIME-Version: 1.0
+
+<html><body><p>Here is the report. The numbers for Q3 are on <b>page 2</b>.</p><p><img src="https://example.com/tracker.png" width="1" height="1"></p><p>Grace</p></body></html>
+
+--===============3771344109372651446==--
+
+--===============1649326770960430611==
+Content-Type: application/pdf
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="report.pdf"
+MIME-Version: 1.0
+
+JVBERi0xLjQKJSVFT0YK
+
+--===============1649326770960430611==--

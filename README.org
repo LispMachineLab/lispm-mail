@@ -1,0 +1,124 @@
+#+title: LispM Mail
+
+#+HTML: <p align="center"><a href="https://github.com/LispMachineLab/lispm-mail/actions/workflows/test.yml"><img src="https://github.com/LispMachineLab/lispm-mail/actions/workflows/test.yml/badge.svg" alt="test" /></a></p>
+
+Emacs's own mail, in a classic-style window.  Emacs has always come with everything mail needs,
+imap.el to read it, smtpmail to send it, message mode to write it, mm and shr to show MIME and
+HTML, auth-source for passwords, but with no window to set an account up in, and Rmail, a reader
+of mail spools, behind Read Mail.  LispM Mail puts them together as the mail programs of the
+classic Mac did, Outlook Express and Eudora: a folder list on the left, each account's folders
+under it with how many messages are unread; a table of the folder's messages, sorted by any of
+its columns, the unread ones bold under a closed envelope; the message chosen under it, its
+headers in a box over its text, its attachments listed there.  Accounts are added in a form that
+fills their servers in from the address.  It is an application of [[https://github.com/LispMachineLab/lispm-desktop][LispM Desktop]], which its App
+Store installs and dresses in its own look, and works in any Emacs 30.1 or later.  In code, the
+prefix is ~lispm-mail-~.
+
+* What it needs
+
+- *A mail account* whose server speaks IMAP and SMTP: Gmail, iCloud, Yahoo, Fastmail, QQ Mail,
+  NetEase, Zoho, GMX, or a server of your own.  Providers that sign in only through their own
+  pages, as Outlook.com may, and Proton Mail without its Bridge, cannot be reached with a password.
+- *lispm-kit*, [[https://github.com/LispMachineLab/lispm-kit][LispM Kit]], with which each window declares its commands once: their keys, their
+  menu items and, for the main ones, the words of a button.  The App Store installs it first.
+
+Nothing else: the rest is Emacs.
+
+* Adding an account
+
+=M-x lispm-mail= opens the window; with no account yet, it offers to add one.  The form asks
+for a name, an address and a password, and fills the servers in from the address: those of the
+providers most people have are known, others are asked of Thunderbird's database of providers,
+and any can be typed.  Under the servers, what the provider asks for is said, as Gmail's and
+iCloud's app passwords.  *Test Connection* logs in to both servers and says how it went; *Save*
+keeps the account.
+
+The password is kept in the macOS Keychain, given to its =security= program on its input, never
+on its command line; elsewhere, with auth-source, in the first of your ~auth-sources~.  Nothing
+else of an account is secret: it is kept with Customize, in ~lispm-mail-accounts~.
+
+* Reading
+
+| =n= =p=, =↓= =↑=     | the next and the previous message, shown as it is chosen |
+| =N=                  | the next unread message                                  |
+| =SPC=                | read on in the message; at its end, the next one         |
+| =RET=                | go to the message; on a draft, write on it               |
+| =TAB= =S-TAB=        | the next and the previous pane                           |
+| =G=                  | go to a mailbox, by its name                             |
+| click a column's name | sort the table by it, again to reverse it               |
+| =/=, =s=             | list only the messages holding words, as they are typed  |
+| =+=                  | list older messages too                                  |
+| =g=                  | get mail now                                             |
+| =P=                  | show this message's pictures from the web                |
+| =S=                  | save its attachments                                     |
+
+A message is marked read as it is shown, unless the settings say otherwise.  Its pictures on the
+web are not fetched unless asked, as each tells its sender the message was read, and when; those
+it holds itself are shown.  Its attachments are buttons, to open or to save.
+
+* Doing things to messages
+
+| =c=          | write a new message              |
+| =r= =a= =f=  | reply, reply to all, forward     |
+| =e=          | archive                          |
+| =d=          | move to the Trash; in the Trash, delete for good |
+| =J=          | move to Junk, or out of it       |
+| =m=          | move to a mailbox                |
+| =u=          | mark read, or unread             |
+| =!=          | flag, or no longer               |
+| =x= =U=      | select messages together, select none |
+| =M=          | mark the whole mailbox read      |
+
+=x= selects messages together; what is done then is done to them all.  It is done at once in the
+window and on the server after; when the server refuses, it is undone again.
+
+* Writing
+
+Messages are written in message mode, Emacs's own, with its keys: =C-c C-c= sends, =C-c C-a=
+attaches a file, =C-c C-k= discards.  =C-c C-d= or =C-x C-s= keeps a draft in the account's Drafts
+mailbox, on its server, each save replacing the one before, so that another mail program finds
+it too; once the message is sent, its draft goes.  =C-c C-f f= chooses another account to send
+from.  Addresses complete, =M-TAB=, from the mail kept.  A reply is written above the message it
+quotes, unless the settings say below.
+
+Mail goes in the background: the window closes at once.  A message that could not go stays in
+the Outbox, at the top of the mailboxes, with what went wrong, to be sent again.  A copy of each
+message sent is kept in the account's Sent mailbox, unless its server keeps one itself, as
+Gmail's does.
+
+* Settings
+
+=,= opens the settings: the accounts, to add, edit and remove; the account new mail is written
+from; how often mail is checked for, and how many messages a mailbox lists at first; whether the
+message is shown below the list or beside it; when messages are marked read; HTML or plain
+text; pictures from the web; replies above or below; whether LispM Mail is Emacs's mail; where
+passwords are kept.  Each change is saved at once, with Customize.
+
+* Emacs's mail
+
+Unless ~lispm-mail-use-for-emacs~ says not, LispM Mail is Emacs's mail: =C-x m= and =mailto:=
+links write with it (~mail-user-agent~), Read Mail opens it (~read-mail-command~), and the mail
+flag of ~display-time-mode~ shows its unread mail (~display-time-mail-function~), each only while
+left as Emacs has it, never over a choice of yours.
+
+* How it works
+
+Each account has an Emacs of its own in the background, in batch, which loads
+[[file:lispm-mail-worker.el][lispm-mail-worker.el]] and nothing else: imap.el keeps a connection to the account's server, and
+smtpmail sends.  The Emacs mail is read in asks it for what it needs, the most pressing first, a
+message to read before the first words of others, and never waits for the network.  What is
+fetched is kept in ~lispm-mail-directory~, readable by you alone: each mailbox's latest messages,
+shown at once when it is opened again, and each message read, opened again without the network.
+
+* Tests
+
+=make test compile= runs the tests and byte-compiles the files, warnings as errors.  No test
+speaks to a mail server: what the background Emacs does is tested on what imap.el would have
+parsed, one test starts a background Emacs to check a server that is not there, and
+[[file:test/report.eml][test/report.eml]] is a message with text, HTML and an attachment.  LispM Kit is a checkout beside
+this one, or named by ~LISPM_KIT~.
+
+* License
+
+Copyright (C) 2026 Ryan.K.  Free software under the GNU Affero General Public License, version 3
+or later (see [[file:LICENSE][LICENSE]]).
