@@ -4,7 +4,7 @@ EMACS ?= emacs
 LISPM_KIT ?= ../lispm-kit
 LOAD_PATH = -L . -L $(LISPM_KIT)
 
-FILES = lispm-mail-worker.el lispm-mail-style.el lispm-mail-accounts.el lispm-mail-data.el lispm-mail-view.el \
+FILES = lispm-mail-worker.el lispm-mail-style.el lispm-mail-accounts.el lispm-mail-data.el lispm-mail-sign-in.el lispm-mail-view.el \
 	lispm-mail-compose.el lispm-mail-settings.el lispm-mail.el
 
 .PHONY: test compile

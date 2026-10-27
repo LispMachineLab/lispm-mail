@@ -49,7 +49,12 @@
 ;;   imap       :host :port :security :user :password, the account's
 ;;              IMAP server, connected to and logged in at once; the
 ;;              connection is kept, and opened again when it drops.
-;;              Answers the server's capabilities.
+;;              Answers the server's capabilities.  An account signing
+;;              in on its provider's page has :oauth instead of
+;;              :password, (:token-url :client-id :scope :refresh-token
+;;              :access-token): it logs in with an access token, by
+;;              SASL XOAUTH2, the one given or one got with the refresh
+;;              token, again when it expires.
 ;;   mailboxes  The mailboxes, each (:name :delimiter :flags :messages
 ;;              :unseen); :status nil leaves out the counts.
 ;;   sync       :mailbox, :limit messages from its end, :known UIDs whose
@@ -80,6 +85,11 @@
 ;; :security is `tls', `starttls' or `none'.  Nothing asks a question:
 ;; the questions imap.el, smtpmail or the network's security manager
 ;; would ask on the terminal fail the request instead.
+;;
+;; When the provider gives a new refresh token with an access token,
+;; the background Emacs says it, unasked, for it to be kept instead:
+;;
+;;   note     (nil refresh-token TOKEN)
 
 ;;; Code:
 
@@ -94,6 +104,9 @@
 (require 'smtpmail)
 (require 'nsm)
 (require 'time-date)
+(require 'url)
+(require 'url-http)
+(require 'url-util)
 
 (defconst lispm-mail-worker-tag "\e[lispm-mail] "
   "What begins each answer of a background Emacs, on a line of its own.")
@@ -108,6 +121,10 @@
 
 (defvar lispm-mail-worker--buffer nil
   "The buffer of the connection to the IMAP server, or nil.")
+
+(defvar lispm-mail-worker--token nil
+  "The access token got last: (TOKEN EXPIRES REFRESH-TOKEN), EXPIRES a
+`float-time', REFRESH-TOKEN the one to get the next with.")
 
 ;;;; Saying
 
@@ -158,6 +175,76 @@
         (push (if (= start end) (number-to-string start) (format "%d:%d" start end)) runs)))
     (string-join (nreverse runs) ",")))
 
+;;;; Signing in with a token
+
+(defun lispm-mail-worker--token-error (answer)
+  "Return what ANSWER, a token endpoint's refusal, says, in words."
+  (let ((code (alist-get 'error answer))
+        (text (alist-get 'error_description answer)))
+    (cond
+     ((member code '("invalid_grant" "interaction_required" "consent_required"))
+      "The account is no longer signed in: sign in again in its settings")
+     ((stringp text)
+      ;; Microsoft follows what it says with its trace and correlation IDs.
+      (string-trim (car (split-string text "\\(\r?\n\\| Trace ID:\\)"))))
+     (t (format "The sign-in failed: %s" code)))))
+
+(defun lispm-mail-worker-token-answer (buffer)
+  "Return what BUFFER, a token endpoint's HTTP response, gives:
+\(:access-token :refresh-token :expires-in).  Signal an error saying
+why when it refuses."
+  (with-current-buffer buffer
+    (goto-char (point-min))
+    (let ((answer (and (re-search-forward "\r?\n\r?\n" nil t)
+                       (ignore-errors
+                         (json-parse-string
+                          (decode-coding-string (buffer-substring-no-properties (point) (point-max))
+                                                'utf-8)
+                          :object-type 'alist :null-object nil)))))
+      (cond
+       ((stringp (alist-get 'access_token answer))
+        (list :access-token (alist-get 'access_token answer)
+              :refresh-token (alist-get 'refresh_token answer)
+              :expires-in (let ((expires (alist-get 'expires_in answer)))
+                            (if (stringp expires) (string-to-number expires) (or expires 3600)))))
+       ((alist-get 'error answer)
+        (error "%s" (lispm-mail-worker--token-error answer)))
+       (t (error "The sign-in server did not answer"))))))
+
+(defun lispm-mail-worker-token-request (fields)
+  "Return FIELDS, ((NAME VALUE) ...), as a token request's body."
+  (url-build-query-string fields))
+
+(defun lispm-mail-worker-access-token (oauth)
+  "Return an access token for OAUTH, a server's :oauth: the one it gives,
+or one got with its refresh token, kept until it expires."
+  (or (plist-get oauth :access-token)
+      (pcase-let ((`(,token ,expires) lispm-mail-worker--token))
+        (and token (< (float-time) (- expires 60)) token))
+      (let* ((refresh (or (nth 2 lispm-mail-worker--token) (plist-get oauth :refresh-token)))
+             (url-request-method "POST")
+             (url-request-extra-headers '(("Content-Type" . "application/x-www-form-urlencoded")))
+             (url-request-data (lispm-mail-worker-token-request
+                                `(("client_id" ,(plist-get oauth :client-id))
+                                  ("grant_type" "refresh_token")
+                                  ("refresh_token" ,refresh)
+                                  ("scope" ,(plist-get oauth :scope)))))
+             (buffer (progn
+                       (unless (and refresh (plist-get oauth :client-id))
+                         (error "The account is not signed in: sign in in its settings"))
+                       (url-retrieve-synchronously (plist-get oauth :token-url) t t 60))))
+        (unless buffer
+          (error "The sign-in server did not answer"))
+        (let ((answer (unwind-protect (lispm-mail-worker-token-answer buffer)
+                        (kill-buffer buffer))))
+          (let ((newer (or (plist-get answer :refresh-token) refresh)))
+            (setq lispm-mail-worker--token (list (plist-get answer :access-token)
+                                                 (+ (float-time) (plist-get answer :expires-in))
+                                                 newer))
+            (unless (equal newer refresh)
+              (lispm-mail-worker--say (list nil 'refresh-token newer))))
+          (plist-get answer :access-token)))))
+
 ;;;; The IMAP server
 
 (defun lispm-mail-worker--stream (security)
@@ -172,22 +259,54 @@
 and log in; return BUFFER.  Signal an error saying why when it fails."
   (let ((host (plist-get server :host))
         (port (plist-get server :port))
+        (oauth (plist-get server :oauth))
         (imap-store-password t))
     (unless (imap-open host port (lispm-mail-worker--stream (plist-get server :security)) nil buffer)
       (error "Cannot reach %s at port %s" host port))
-    (with-current-buffer buffer
-      (setq imap-auth (if (and (imap-capability 'LOGINDISABLED) (imap-capability 'AUTH=PLAIN))
-                          'plain
-                        'login)))
-    (unless (condition-case nil
-                (imap-authenticate (plist-get server :user) (plist-get server :password) buffer)
-              ;; imap.el asks for the password again when the server refuses it.
-              (error nil))
-      (let ((said (with-current-buffer buffer (and (boundp 'imap-error) imap-error))))
-        (imap-close buffer)
-        (error "The server refused the user name or password%s"
-               (if (stringp said) (concat ": " said) ""))))
+    (if oauth
+        (let ((said (lispm-mail-worker--xoauth2 (plist-get server :user)
+                                                (lispm-mail-worker-access-token oauth)
+                                                buffer)))
+          (unless (eq said t)
+            (imap-close buffer)
+            ;; Got again next time, in case it was taken back.
+            (setq lispm-mail-worker--token nil)
+            (error "The server refused the sign-in%s" (if said (concat ": " said) ""))))
+      (with-current-buffer buffer
+        (setq imap-auth (if (and (imap-capability 'LOGINDISABLED) (imap-capability 'AUTH=PLAIN))
+                            'plain
+                          'login)))
+      (unless (condition-case nil
+                  (imap-authenticate (plist-get server :user) (plist-get server :password) buffer)
+                ;; imap.el asks for the password again when the server refuses it.
+                (error nil))
+        (let ((said (with-current-buffer buffer (and (boundp 'imap-error) imap-error))))
+          (imap-close buffer)
+          (error "The server refused the user name or password%s"
+                 (if (stringp said) (concat ": " said) "")))))
     buffer))
+
+(defun lispm-mail-worker-xoauth2 (user token)
+  "Return what SASL XOAUTH2 says to log USER in with TOKEN, base64-encoded."
+  (base64-encode-string
+   (encode-coding-string (concat "user=" user "\1auth=Bearer " token "\1\1") 'utf-8)
+   t))
+
+(defun lispm-mail-worker--xoauth2 (user token buffer)
+  "Log in as USER with TOKEN, an access token, on BUFFER's connection.
+Return t, or what the server said refusing it, or nil."
+  (let (said)
+    (with-current-buffer buffer
+      (if (imap-ok-p (imap-send-command-wait
+                      (list (concat "AUTHENTICATE XOAUTH2 " (lispm-mail-worker-xoauth2 user token))
+                            ;; Refusing, the server says why in a
+                            ;; challenge, to be answered empty.
+                            (lambda (challenge)
+                              (setq said (ignore-errors (base64-decode-string challenge)))
+                              ""))
+                      buffer))
+          (progn (setq imap-state 'auth) t)
+        (or (imap-error-text buffer) said)))))
 
 (defun lispm-mail-worker--connection ()
   "Return the buffer of the connection to the IMAP server, open and logged in."
@@ -578,7 +697,9 @@ connection: only them, when the server can, else all marked."
   "Send the message of PROPERTIES' :file through their :smtp server."
   (let* ((smtp (plist-get properties :smtp))
          (user (plist-get smtp :user))
-         (password (plist-get smtp :password))
+         (oauth (plist-get smtp :oauth))
+         ;; Signing in, the access token is given as the password.
+         (password (if oauth (lispm-mail-worker-access-token oauth) (plist-get smtp :password)))
          (file (plist-get properties :file)))
     (with-temp-buffer
       (let ((coding-system-for-read 'raw-text))
@@ -590,7 +711,8 @@ connection: only them, when the server can, else all marked."
             (smtpmail-smtp-user user)
             (smtpmail-queue-mail nil)
             (smtpmail-debug-info nil)
-            (smtpmail-warn-about-unknown-extensions nil))
+            (smtpmail-warn-about-unknown-extensions nil)
+            (smtpmail-auth-supported (if oauth '(xoauth2) smtpmail-auth-supported)))
         ;; smtpmail asks auth-source for the password, which is given
         ;; here; it logs in when the server offers to.
         (cl-letf (((symbol-function 'auth-source-search)
@@ -641,6 +763,9 @@ connection: only them, when the server can, else all marked."
   (process-send-string process (concat text "\r\n"))
   (lispm-mail-worker--smtp-reply process))
 
+(defconst lispm-mail-worker-smtp-greeting-timeout 30
+  "Seconds an SMTP server checked has to greet and say what it can do.")
+
 (defun lispm-mail-worker-check-smtp (server)
   "Connect to SERVER, an SMTP server as `send' takes it, and log in.
 Return t, or signal an error saying what went wrong."
@@ -648,16 +773,20 @@ Return t, or signal an error saying what went wrong."
         (security (plist-get server :security))
         (process nil))
     (unwind-protect
-        (let* ((result (open-network-stream
-                        "lispm-mail-smtp" buffer (plist-get server :host) (plist-get server :port)
-                        :type (pcase security ('tls 'tls) ('starttls 'starttls) (_ 'plain))
-                        :return-list t
-                        :end-of-command "^[0-9][0-9][0-9] .*\r?\n"
-                        :success "^2"
-                        :capability-command "EHLO lispm\r\n"
-                        :starttls-function (lambda (capabilities)
-                                             (and (string-match-p "STARTTLS" capabilities)
-                                                  "STARTTLS\r\n"))))
+        (let* ((result (with-timeout (lispm-mail-worker-smtp-greeting-timeout
+                                      (error (concat "%s did not answer at port %s: a firewall"
+                                                     " or proxy may be stopping mail from being sent")
+                                             (plist-get server :host) (plist-get server :port)))
+                         (open-network-stream
+                          "lispm-mail-smtp" buffer (plist-get server :host) (plist-get server :port)
+                          :type (pcase security ('tls 'tls) ('starttls 'starttls) (_ 'plain))
+                          :return-list t
+                          :end-of-command "^[0-9][0-9][0-9] .*\r?\n"
+                          :success "^2"
+                          :capability-command "EHLO lispm\r\n"
+                          :starttls-function (lambda (capabilities)
+                                               (and (string-match-p "STARTTLS" capabilities)
+                                                    "STARTTLS\r\n")))))
                ;; Over TLS, what the server can do was asked as it was
                ;; connected to; in plain text, it is asked now.
                (capabilities (plist-get (cdr result) :capabilities)))
@@ -669,27 +798,48 @@ Return t, or signal an error saying what went wrong."
           (unless capabilities
             (setq capabilities (cdr (lispm-mail-worker--smtp-say process "EHLO lispm"))))
           (when-let* ((user (plist-get server :user))
-                      (password (plist-get server :password))
-                      ((not (string-empty-p user))))
-            (let ((reply
-                   (cond
-                    ((string-match-p "AUTH.*PLAIN" capabilities)
-                     (lispm-mail-worker--smtp-say
-                      process (concat "AUTH PLAIN "
-                                      (base64-encode-string
-                                       (encode-coding-string (concat "\0" user "\0" password) 'utf-8) t))))
-                    ((string-match-p "AUTH.*LOGIN" capabilities)
-                     (lispm-mail-worker--smtp-say process "AUTH LOGIN")
-                     (lispm-mail-worker--smtp-say
-                      process (base64-encode-string (encode-coding-string user 'utf-8) t))
-                     (lispm-mail-worker--smtp-say
-                      process (base64-encode-string (encode-coding-string password 'utf-8) t)))
-                    (t (error "The server offers no way to log in that LispM Mail knows")))))
+                      ((not (string-empty-p user)))
+                      ((or (plist-get server :oauth) (plist-get server :password))))
+            (let* ((password (plist-get server :password))
+                   (reply
+                    (cond
+                     ((plist-get server :oauth)
+                      (unless (string-match-p "AUTH.*XOAUTH2" capabilities)
+                        (error "The server offers no sign-in with a token"))
+                      (let ((reply (lispm-mail-worker--smtp-say
+                                    process (concat "AUTH XOAUTH2 "
+                                                    (lispm-mail-worker-xoauth2
+                                                     user (lispm-mail-worker-access-token
+                                                           (plist-get server :oauth)))))))
+                        ;; Refusing, the server says why in a challenge,
+                        ;; to be answered empty.
+                        (if (= (car reply) 334)
+                            (lispm-mail-worker--smtp-say process "")
+                          reply)))
+                     ((string-match-p "AUTH.*PLAIN" capabilities)
+                      (lispm-mail-worker--smtp-say
+                       process (concat "AUTH PLAIN "
+                                       (base64-encode-string
+                                        (encode-coding-string (concat "\0" user "\0" password)
+                                                              'utf-8)
+                                        t))))
+                     ((string-match-p "AUTH.*LOGIN" capabilities)
+                      (lispm-mail-worker--smtp-say process "AUTH LOGIN")
+                      (lispm-mail-worker--smtp-say
+                       process (base64-encode-string (encode-coding-string user 'utf-8) t))
+                      (lispm-mail-worker--smtp-say
+                       process (base64-encode-string (encode-coding-string password 'utf-8) t)))
+                     (t (error "The server offers no way to log in that LispM Mail knows")))))
               (unless (= (car reply) 235)
-                (error "The server refused the user name or password: %s" (cdr reply)))))
+                (error (if (plist-get server :oauth)
+                           "The server refused the sign-in: %s"
+                         "The server refused the user name or password: %s")
+                       (cdr reply)))))
           (ignore-errors (lispm-mail-worker--smtp-say process "QUIT"))
           t)
-      (when (and process (process-live-p process)) (delete-process process))
+      ;; The connection's, even while it was being opened.
+      (when-let* ((live (get-buffer-process buffer)))
+        (delete-process live))
       (kill-buffer buffer))))
 
 (defun lispm-mail-worker--check (properties)

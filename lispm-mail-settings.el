@@ -51,6 +51,7 @@
 (require 'lispm-mail-style)
 (require 'lispm-mail-accounts)
 (require 'lispm-mail-data)
+(require 'lispm-mail-sign-in)
 
 (defvar lispm-mail-layout)
 (defvar lispm-mail-mark-read)
@@ -197,10 +198,11 @@ ON-CHANGE is called with the value chosen.  WIDTH pads its text."
   "Insert TEXT, a heading."
   (widget-insert "\n  " (propertize text 'face 'lispm-mail-settings-heading) "\n\n"))
 
-(defun lispm-mail-settings--note (text)
-  "Insert TEXT, said of the setting above, on a line of its own."
+(defun lispm-mail-settings--note (text &optional face)
+  "Insert TEXT, said of the setting above, on a line of its own, in FACE
+or as a note."
   (widget-insert (propertize " " 'display `(space :align-to ,lispm-mail-settings-column))
-                 (propertize text 'face 'lispm-mail-settings-note
+                 (propertize text 'face (or face 'lispm-mail-settings-note)
                              'wrap-prefix `(space :align-to ,lispm-mail-settings-column))
                  "\n"))
 
@@ -436,6 +438,23 @@ This is one of `lispm-mail-changed-functions'."
 (defvar-local lispm-mail-account--status-end nil
   "Where what Test Connection found ends.")
 
+(defvar-local lispm-mail-account--provider nil
+  "What is known of the address's provider, as
+`lispm-mail-provider-settings' says it.")
+
+(defvar-local lispm-mail-account--sign-in nil
+  "How the account signs in: nil, with its password, or a key of
+`lispm-mail-sign-ins'.")
+
+(defvar-local lispm-mail-account--token nil
+  "What signing in gave just now, (:access-token :refresh-token ...), or nil.")
+
+(defvar-local lispm-mail-account--waiting nil
+  "While the browser is waited for, the function giving the sign-in up.")
+
+(defvar-local lispm-mail-account--sign-in-error nil
+  "What went wrong signing in last, or nil.")
+
 (defconst lispm-mail-security-choices
   '((tls . "SSL/TLS") (starttls . "STARTTLS") (none . "None"))
   "The securities a server's connection may have.")
@@ -478,11 +497,16 @@ This is one of `lispm-mail-changed-functions'."
     (lispm-mail-account--set :smtp-user (plist-get smtp :user))
     (lispm-mail-account--set :smtp-security (plist-get smtp :security))
     (lispm-mail-account--set :sent (plist-get settings :sent))
-    (setq lispm-mail-account--note
-          (concat (if (plist-get settings :provider)
-                      (format "Servers of %s filled in." (plist-get settings :provider))
-                    "Servers guessed from the address: check them with Test Connection.")
-                  (if (plist-get settings :note) (concat "  " (plist-get settings :note)) "")))
+    (setq lispm-mail-account--provider settings
+          lispm-mail-account--note
+          (if (plist-get settings :provider)
+              (format "Servers of %s filled in." (plist-get settings :provider))
+            "Servers guessed from the address: check them with Test Connection."))
+    (unless (eq (plist-get settings :sign-in) lispm-mail-account--sign-in)
+      (lispm-mail-account--give-up)
+      (setq lispm-mail-account--sign-in (plist-get settings :sign-in)
+            lispm-mail-account--token nil
+            lispm-mail-account--sign-in-error nil))
     (lispm-mail-account--redraw)))
 
 (defun lispm-mail-account--address-changed (widget &rest _)
@@ -534,6 +558,21 @@ database of providers, or guessed."
         typed
       (and lispm-mail-account--editing (lispm-mail-password lispm-mail-account--editing)))))
 
+(defun lispm-mail-account--refresh-token ()
+  "Return the token signing the form's account in: got just now, or kept
+for the account edited; nil while it is not signed in."
+  (or (plist-get lispm-mail-account--token :refresh-token)
+      (and lispm-mail-account--editing
+           (eq (plist-get lispm-mail-account--editing :sign-in) lispm-mail-account--sign-in)
+           (lispm-mail-password lispm-mail-account--editing))))
+
+(defun lispm-mail-account--credentials ()
+  "Return what logs in to the form's servers, as `lispm-mail-server' has it."
+  (if-let* ((kind lispm-mail-account--sign-in))
+      (list :oauth (lispm-mail-sign-in-oauth kind (lispm-mail-account--refresh-token)
+                                             (plist-get lispm-mail-account--token :access-token)))
+    (list :password (lispm-mail-account--password))))
+
 (defun lispm-mail-account--problem ()
   "Return what is missing from the form, or nil."
   (let ((address (lispm-mail-account--value :address)))
@@ -542,6 +581,9 @@ database of providers, or guessed."
           ((string-empty-p (or (lispm-mail-account--value :smtp-host) "")) "Type the outgoing mail server")
           ((<= (plist-get (lispm-mail-account--server 'imap) :port) 0) "Type the incoming server's port")
           ((<= (plist-get (lispm-mail-account--server 'smtp) :port) 0) "Type the outgoing server's port")
+          (lispm-mail-account--sign-in
+           (unless (lispm-mail-account--refresh-token)
+             (format "Sign in with %s first" (lispm-mail-sign-in-name lispm-mail-account--sign-in))))
           ((not (lispm-mail-account--password)) "Type the password"))))
 
 (defun lispm-mail-account-test ()
@@ -552,17 +594,104 @@ database of providers, or guessed."
   (when-let* ((problem (lispm-mail-account--problem)))
     (user-error "%s" problem))
   (let ((buffer (current-buffer))
-        (password (lispm-mail-account--password)))
+        (credentials (lispm-mail-account--credentials)))
     (setq lispm-mail-account--status 'checking)
     (lispm-mail-account--redraw-status)
     (lispm-mail-check-servers
-     (append (list :password password) (lispm-mail-account--server 'imap))
-     (append (list :password password) (lispm-mail-account--server 'smtp))
+     (append credentials (lispm-mail-account--server 'imap))
+     (append credentials (lispm-mail-account--server 'smtp))
      (lambda (result)
        (when (buffer-live-p buffer)
          (with-current-buffer buffer
            (setq lispm-mail-account--status result)
            (lispm-mail-account--redraw-status)))))))
+
+(defun lispm-mail-account--give-up ()
+  "Stop waiting for the browser, if the form is."
+  (when lispm-mail-account--waiting
+    (funcall lispm-mail-account--waiting)
+    (setq lispm-mail-account--waiting nil)))
+
+(defun lispm-mail-account--come-back (buffer)
+  "Bring the window of BUFFER, the form, back in front of the browser."
+  (when-let* (((not noninteractive))
+              (window (get-buffer-window buffer t)))
+    (select-frame-set-input-focus (window-frame window))
+    (select-window window)))
+
+(defun lispm-mail-account-sign-in ()
+  "Sign the form's account in on its provider's page, in the browser.
+Once signed in, the servers are logged in to, to see that they work."
+  (interactive)
+  (let ((kind lispm-mail-account--sign-in)
+        (address (lispm-mail-account--value :address))
+        (buffer (current-buffer)))
+    (unless kind
+      (user-error "This account logs in with its password"))
+    (unless (lispm-mail-domain address)
+      (user-error "Type the email address first, as you@example.com"))
+    (lispm-mail-account--give-up)
+    (setq lispm-mail-account--sign-in-error nil
+          lispm-mail-account--waiting
+          (lispm-mail-sign-in
+           kind address
+           (lambda (token error)
+             (when (buffer-live-p buffer)
+               (with-current-buffer buffer
+                 (setq lispm-mail-account--waiting nil)
+                 (if token
+                     (setq lispm-mail-account--token token)
+                   (setq lispm-mail-account--sign-in-error error))
+                 (lispm-mail-account--redraw)
+                 (lispm-mail-account--come-back buffer)
+                 (when token
+                   (lispm-mail-account-test)))))))
+    (lispm-mail-account--redraw)))
+
+(defun lispm-mail-account-stop-sign-in ()
+  "Stop waiting for the provider's page to sign the account in."
+  (interactive)
+  (lispm-mail-account--give-up)
+  (lispm-mail-account--redraw))
+
+(defun lispm-mail-account--draw-sign-in ()
+  "Draw the row signing the account in on its provider's page."
+  (let ((name (lispm-mail-sign-in-name lispm-mail-account--sign-in)))
+    (lispm-mail-settings--label "Sign in")
+    (cond
+     (lispm-mail-account--waiting
+      (widget-insert (propertize (format "Waiting for %s, in your browser…" name)
+                                 'face 'lispm-mail-settings-note)
+                     "  ")
+      (lispm-mail-settings--button "Stop" #'lispm-mail-account-stop-sign-in))
+     ((lispm-mail-account--refresh-token)
+      (widget-insert (propertize "● " 'face 'lispm-mail-settings-good)
+                     (format "Signed in with %s" name) "   ")
+      (lispm-mail-settings--button "Sign In Again…" #'lispm-mail-account-sign-in))
+     (t
+      (lispm-mail-settings--button (format "Sign In with %s…" name) #'lispm-mail-account-sign-in)))
+    (widget-insert "\n")
+    (cond
+     (lispm-mail-account--sign-in-error
+      (lispm-mail-settings--note lispm-mail-account--sign-in-error 'lispm-mail-settings-bad))
+     ((not (lispm-mail-account--refresh-token))
+      (lispm-mail-settings--note
+       (format "%s's own page opens in your browser: there, let LispM Mail read and send this account's mail.  No password is kept here."
+               name))))))
+
+(defun lispm-mail-account--draw-password (value)
+  "Draw the password's field, VALUE its value, and what its provider asks."
+  (lispm-mail-account--field :password "Password" value :secret ?*)
+  (when (and lispm-mail-account--editing (string-empty-p (or value "")))
+    (lispm-mail-settings--note "Leave it empty to keep the password kept."))
+  (when-let* ((note (plist-get lispm-mail-account--provider :note)))
+    (lispm-mail-settings--note note))
+  (when-let* ((url (plist-get lispm-mail-account--provider :password-url)))
+    (widget-insert (propertize " " 'display `(space :align-to ,lispm-mail-settings-column)))
+    (lispm-mail-settings--button (or (plist-get lispm-mail-account--provider :password-button)
+                                     "Make a Password…")
+                                 (lambda () (funcall lispm-mail-sign-in-browse-function url)))
+    (widget-insert "\n")))
 
 (defun lispm-mail-account--status-text ()
   "Return what Test Connection found, as the form says it."
@@ -612,9 +741,9 @@ database of providers, or guessed."
     (lispm-mail-account--field :name "Your name" (funcall value :name))
     (lispm-mail-account--field :address "Email address" (funcall value :address)
                                :notify #'lispm-mail-account--address-changed)
-    (lispm-mail-account--field :password "Password" (funcall value :password) :secret ?*)
-    (when (and lispm-mail-account--editing (string-empty-p (or (funcall value :password) "")))
-      (lispm-mail-settings--note "Leave it empty to keep the password kept."))
+    (if lispm-mail-account--sign-in
+        (lispm-mail-account--draw-sign-in)
+      (lispm-mail-account--draw-password (funcall value :password)))
     (lispm-mail-account--field :label "Call it" (funcall value :label))
     (lispm-mail-settings--note "As the mailboxes show it; its address unless said.")
     (widget-insert "\n" (propertize " " 'display `(space :align-to ,lispm-mail-settings-column)))
@@ -706,13 +835,21 @@ database of providers, or guessed."
                         :signature (let ((signature (string-trim-right
                                                      (or (lispm-mail-account--value :signature) ""))))
                                      (and (not (string-empty-p signature)) signature))))
-         (typed (let ((typed (lispm-mail-account--value :password)))
+         (account (if lispm-mail-account--sign-in
+                      (append account (list :sign-in lispm-mail-account--sign-in))
+                    account))
+         (typed (let ((typed (if lispm-mail-account--sign-in
+                                 (plist-get lispm-mail-account--token :refresh-token)
+                               (lispm-mail-account--value :password))))
                   (and typed (not (string-empty-p typed)) typed)))
-         (password (lispm-mail-account--password)))
+         ;; Read before the one kept for the old servers is forgotten.
+         (secret (if lispm-mail-account--sign-in
+                     (lispm-mail-account--refresh-token)
+                   (lispm-mail-account--password))))
     (when (and old (not (equal (plist-get old :imap) (plist-get account :imap))))
       (ignore-errors (lispm-mail-forget-password old)))
     (when (or typed (not old) (not (equal (plist-get old :imap) (plist-get account :imap))))
-      (lispm-mail-set-password account password))
+      (lispm-mail-set-password account secret))
     (lispm-mail-save-accounts
      (if old
          (mapcar (lambda (each) (if (equal (lispm-mail-account-id each) (lispm-mail-account-id old))
@@ -741,6 +878,8 @@ database of providers, or guessed."
   :menu "Account"
   (lispm-mail-account-look-up :key "C-c C-l" :help "Fill the servers in from the address"
                               :label "Fill In Servers")
+  (lispm-mail-account-sign-in :key "C-c C-s" :help "Sign in on the provider's own page, in the browser"
+                              :label "Sign In…")
   (lispm-mail-account-test :key "C-c C-t" :help "Log in to the servers, to see that they work"
                            :label "Test Connection" :button "Test")
   "---"
@@ -755,7 +894,8 @@ database of providers, or guessed."
   (setq-local line-spacing 0.2
               word-wrap t)
   (lispm-mail-style-dress)
-  (lispm-mail-settings--buttons))
+  (lispm-mail-settings--buttons)
+  (add-hook 'kill-buffer-hook #'lispm-mail-account--give-up nil t))
 
 (set-keymap-parent lispm-mail-account-mode-map widget-keymap)
 
@@ -775,11 +915,15 @@ database of providers, or guessed."
   "Show the form of ACCOUNT, or of a new one when nil."
   (let ((buffer (get-buffer-create lispm-mail-account-buffer-name)))
     (with-current-buffer buffer
+      (when (derived-mode-p 'lispm-mail-account-mode)
+        (lispm-mail-account--give-up))
       (lispm-mail-account-mode)
       (setq lispm-mail-account--editing account
             lispm-mail-account--edited (and account t)
             lispm-mail-account--status nil
             lispm-mail-account--note nil
+            lispm-mail-account--provider (lispm-mail-provider-settings (plist-get account :address))
+            lispm-mail-account--sign-in (plist-get account :sign-in)
             lispm-mail-account--values
             (list :imap-security (plist-get (plist-get account :imap) :security)
                   :smtp-security (plist-get (plist-get account :smtp) :security)
