@@ -294,7 +294,7 @@ To, Cc, Subject, and ATTACHMENTS, handles, each a button."
                                      (append '("From" "Date" "Subject")
                                              (and (plist-get headers :reply-to) '("Reply-To"))
                                              (and attachments '("Attachments"))))))))
-    (insert (propertize "\n" 'line-height t 'line-spacing 8))
+    (insert (lispm-mail-style-blank-line))
     (lispm-mail-view--field "From" (concat (propertize (lispm-mail-address-text from t) 'face 'lispm-mail-sender)
                                            (if (cdr from) (concat " <" (cdr from) ">") "")))
     (lispm-mail-view--field "Date" (lispm-mail-date-text (plist-get headers :date) t))
@@ -314,10 +314,10 @@ To, Cc, Subject, and ATTACHMENTS, handles, each a button."
       (lispm-mail-view--field (if (cdr attachments) "Attachments" "Attachment")
                               (mapconcat #'lispm-mail-view--attachment-button attachments
                                          (lispm-mail-style-space 14))))
-    (insert (propertize "\n" 'line-height t 'line-spacing 6))
+    (insert (lispm-mail-style-blank-line))
     (add-face-text-property start (point) 'lispm-mail-header-box t)
     (put-text-property start (point) 'lispm-mail-head t)
-    (insert (propertize "\n" 'line-height t 'line-spacing 14))))
+    (insert (lispm-mail-style-blank-line))))
 
 (defun lispm-mail-view--links (start end)
   "Make the web and mail addresses between START and END pressable."

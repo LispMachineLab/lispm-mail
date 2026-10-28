@@ -787,5 +787,27 @@ password, and keeps the token got."
       (insert-file-contents file)
       (should-not (re-search-forward "lispm-desktop\\|platinum" nil t)))))
 
+(defun lispm-mail-test--weightless-blank-lines ()
+  "Return where an empty line of this buffer has a newline of `line-height' t."
+  (let ((found nil))
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward "^\n" nil t)
+        (when (eq (get-text-property (1- (point)) 'line-height) t)
+          (push (1- (point)) found))))
+    found))
+
+(ert-deftest lispm-mail-test-blank-lines-take-clicks ()
+  "No empty line has a newline of `line-height' t: Emacs draws such a line a
+line high but takes it as none where the mouse is, so that a click on the
+welcome page's Add Account… button, under four of them, missed it."
+  (with-temp-buffer
+    (lispm-mail--draw-welcome)
+    (lispm-mail--empty "Nothing here.")
+    (lispm-mail-view--header (list :from '("Ada" . "ada@example.org") :subject "Hi" :date 1793095200))
+    (should (string-search "Add Account" (buffer-string)))
+    (should (string-search "Subject" (buffer-string)))
+    (should-not (lispm-mail-test--weightless-blank-lines))))
+
 (provide 'lispm-mail-test)
 ;;; lispm-mail-test.el ends here

@@ -209,6 +209,13 @@ Its newline weighs nothing, so that the line is as high as the rule."
           (propertize " " 'display '(space :align-to right :height (1)) 'face 'lispm-mail-separator)
           (propertize "\n" 'line-height t 'line-spacing 0)))
 
+(defun lispm-mail-style-blank-line ()
+  "Return an empty line, a line of text high.
+Its newline has no `line-height' t, unlike a rule's: Emacs draws an
+empty line with it a line high, but takes it as no height when it finds
+what the mouse is on, so that every click under it lands a line low."
+  (propertize "\n" 'line-spacing 0))
+
 ;;;; Colours
 
 (defun lispm-mail-style-hex (colour)

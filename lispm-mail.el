@@ -277,7 +277,7 @@ name, over its folders."
       (let ((inhibit-read-only t)
             (place (get-text-property (point) 'lispm-mail-place)))
         (erase-buffer)
-        (insert (propertize "\n" 'line-height t 'line-spacing 4))
+        (insert (lispm-mail-style-blank-line))
         (when lispm-mail-outbox
           (lispm-mail--mailbox-line '(outbox) 'outbox "Outbox" (length lispm-mail-outbox) -1
                                     (seq-find (lambda (entry) (eq (plist-get entry :state) 'failed))
@@ -313,7 +313,7 @@ name, over its folders."
                         (insert (lispm-mail-style-space (+ lispm-mail-sidebar-padding 18 (* 16 depth)))
                                 (propertize (lispm-mail--mailbox-title id name) 'face 'lispm-mail-dim)
                                 (propertize "\n" 'line-spacing 3)))))))))
-          (insert (propertize "\n" 'line-height t 'line-spacing 8)))
+          (insert (lispm-mail-style-blank-line)))
         (goto-char (point-min))
         (when-let* ((found (or (and place (text-property-any (point-min) (point-max)
                                                              'lispm-mail-place place))
@@ -464,14 +464,14 @@ leave."
   (cl-flet ((centred (text)
               (insert (propertize " " 'display `(space :align-to (- center (,(/ (lispm-mail-style-width text) 2)))))
                       text "\n")))
-    (insert (propertize "\n" 'line-height t 'line-spacing 80))
+    (insert (lispm-mail-style-blank-line))
     (centred (lispm-mail-style-icon 'inbox 64))
-    (insert (propertize "\n" 'line-height t 'line-spacing 10))
+    (insert (lispm-mail-style-blank-line))
     (centred (propertize "Welcome to Mail" 'face '(:weight bold :height 1.4)))
-    (insert (propertize "\n" 'line-height t 'line-spacing 6))
+    (insert (lispm-mail-style-blank-line))
     (centred "Read and send your mail from Emacs: Gmail, iCloud, Outlook,")
     (centred "QQ Mail, NetEase, Fastmail, or any server speaking IMAP.")
-    (insert (propertize "\n" 'line-height t 'line-spacing 16))
+    (insert (lispm-mail-style-blank-line))
     (let ((label " Add Account… "))
       (insert (propertize " " 'display `(space :align-to (- center (,(/ (lispm-mail-style-width label) 2))))))
       (insert-text-button label 'face 'lispm-mail-button 'mouse-face 'lispm-mail-button-pressed
@@ -501,7 +501,7 @@ leave."
 (defun lispm-mail--empty (text &optional face)
   "Insert TEXT, saying the list is empty, centred under its top."
   (let ((text (propertize text 'face (or face 'lispm-mail-dim))))
-    (insert (propertize "\n" 'line-height t 'line-spacing 40)
+    (insert (lispm-mail-style-blank-line)
             (propertize " " 'display `(space :align-to (- center (,(/ (lispm-mail-style-width text) 2)))))
             text "\n")))
 
@@ -527,7 +527,7 @@ leave."
           (setq tabulated-list-format [] tabulated-list-entries nil
                 header-line-format nil)
           (erase-buffer)
-          (insert (propertize "\n" 'line-height t 'line-spacing 6))
+          (insert (lispm-mail-style-blank-line))
           (if lispm-mail-outbox
               (lispm-mail--draw-outbox)
             (lispm-mail--empty "The Outbox is empty.")))
@@ -547,7 +547,7 @@ leave."
              (messages
               (when (and (not lispm-mail--query)
                          (lispm-mail-mailbox-more-p (car lispm-mail--place) (cdr lispm-mail--place)))
-                (insert (propertize "\n" 'line-height t 'line-spacing 6)
+                (insert (lispm-mail-style-blank-line)
                         (propertize " " 'display '(space :align-to (- center (70)))))
                 (insert-text-button " Load More Messages " 'face 'lispm-mail-button
                                     'mouse-face 'lispm-mail-button-pressed 'follow-link t
