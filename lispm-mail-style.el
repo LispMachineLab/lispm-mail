@@ -163,36 +163,7 @@ unless its family was customized."
     (set-display-table-slot table 'truncation (make-glyph-code ?… 'lispm-mail-dim))
     (setq buffer-display-table table)))
 
-;;;; Lengths
-
-(defun lispm-mail-style-width (text)
-  "Return how many pixels TEXT takes, as its faces draw it."
-  (if (and (fboundp 'string-pixel-width) (display-graphic-p))
-      (string-pixel-width text)
-    (* (string-width text) (max 1 (frame-char-width)))))
-
-(defun lispm-mail-style-fit (text pixels)
-  "Return TEXT cut to PIXELS wide as its faces draw it, ending in an ellipsis."
-  (if (<= (lispm-mail-style-width text) pixels)
-      text
-    (let ((low 0) (high (length text)))
-      ;; The longest start of TEXT that fits with its ellipsis.
-      (while (< low high)
-        (let ((middle (/ (+ low high 1) 2)))
-          (if (<= (lispm-mail-style-width (concat (substring text 0 middle) "…")) pixels)
-              (setq low middle)
-            (setq high (1- middle)))))
-      (concat (string-trim-right (substring text 0 low)) (propertize "…" 'face (get-text-property 0 'face text))))))
-
-(defun lispm-mail-style-space (pixels)
-  "Return a space PIXELS wide."
-  (propertize " " 'display `(space :width (,(max 0 pixels)))))
-
-(defun lispm-mail-style-to (pixels &optional from-right)
-  "Return a space reaching PIXELS from the left, or FROM-RIGHT, from the right."
-  (propertize " " 'display (if from-right
-                               `(space :align-to (- right (,pixels)))
-                             `(space :align-to (,pixels)))))
+;;;; Lines
 
 (defun lispm-mail-style-hairline-mode-line ()
   "Make the current buffer's mode line a hairline under its window."

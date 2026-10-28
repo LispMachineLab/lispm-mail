@@ -60,6 +60,13 @@
     :smtp (:host "smtp.example.com" :port 465 :security tls :user "ada@example.com"))
   "An account the tests use.")
 
+(defun lispm-mail-test-wait (predicate &optional seconds)
+  "Run the event loop until PREDICATE holds or SECONDS (default 5) pass."
+  (let ((deadline (+ (float-time) (or seconds 5))))
+    (while (and (not (funcall predicate)) (< (float-time) deadline))
+      (accept-process-output nil 0.02))
+    (funcall predicate)))
+
 ;;;; The background Emacs
 
 (ert-deftest lispm-mail-test-message-set ()
@@ -482,21 +489,21 @@ password, and keeps the token got."
         (with-current-buffer (lispm-mail-add-account)
           (unwind-protect
               (progn
-                (lispm-mail-account--set :address "ada@gmail.com")
+                (lispm-ui-form-set :address "ada@gmail.com")
                 (lispm-mail-account--fill (lispm-mail-provider-settings "ada@gmail.com"))
                 (should (string-match-p "Sign In with Google…" (buffer-string)))
                 (should-not (string-match-p "^ *Password" (buffer-string)))
                 (should-not (string-match-p "[Aa]pp password" (buffer-string)))
-                (lispm-mail-account--set :address "ada@icloud.com")
+                (lispm-ui-form-set :address "ada@icloud.com")
                 (lispm-mail-account--fill (lispm-mail-provider-settings "ada@icloud.com"))
                 (should (string-match-p "^ *Password" (buffer-string)))
-                (lispm-mail-account--set :address "ada@hotmail.com")
+                (lispm-ui-form-set :address "ada@hotmail.com")
                 (lispm-mail-account--fill (lispm-mail-provider-settings "ada@hotmail.com"))
                 (should (string-match-p "Sign In with Microsoft…" (buffer-string)))
                 (should-not (string-match-p "^ *Password" (buffer-string)))
                 (should (equal (lispm-mail-account--problem) "Sign in with Microsoft first"))
                 (setq lispm-mail-account--token '(:access-token "A" :refresh-token "R"))
-                (lispm-mail-account--redraw)
+                (lispm-ui-form-redraw)
                 (should (string-match-p "Signed in with Microsoft" (buffer-string)))
                 (should (equal (plist-get (plist-get (lispm-mail-account--credentials) :oauth)
                                           :access-token)
@@ -507,6 +514,147 @@ password, and keeps the token got."
         (should (eq (plist-get (car lispm-mail-accounts) :sign-in) 'microsoft))
         (should (equal (plist-get (plist-get (car lispm-mail-accounts) :imap) :host)
                        "outlook.office365.com"))))))
+
+;;;; The settings
+
+(defun lispm-mail-test--widget (key &optional nth)
+  "Return the NTH (default first) widget of the field KEY of the form here."
+  (nth (or nth 0)
+       (let (found)
+         (save-excursion
+           (goto-char (point-min))
+           (while (not (eobp))
+             (when-let* ((widget (widget-at (point))))
+               (when (and (eq (widget-get widget :lispm-form-key) key) (not (memq widget found)))
+                 (push widget found)))
+             (forward-char 1)))
+         (nreverse found))))
+
+(defun lispm-mail-test--type (key text)
+  "Type TEXT at the end of the text field KEY of the form here."
+  (let ((field (alist-get key (lispm-ui-form-widgets))))
+    (goto-char (widget-field-text-end field))
+    (insert text)))
+
+(ert-deftest lispm-mail-test-settings-form ()
+  "The settings are a form applying each change at once: the accounts a
+row each, edited and removed from their buttons, each setting saved as
+it is changed, Done going back."
+  (lispm-mail-test-with-home
+    (let ((saved nil)
+          (removed nil)
+          (lispm-mail-accounts (list lispm-mail-test-account
+                                     '(:id "bob" :name "Bob" :address "bob@example.org" :label "Work"
+                                       :imap (:host "imap.example.org" :port 993 :security tls :user "bob")
+                                       :smtp (:host "smtp.example.org" :port 465 :security tls :user "bob"))))
+          (lispm-mail-check-interval 15))
+      (cl-letf (((symbol-function 'customize-save-variable)
+                 (lambda (variable value) (set variable value) (push (cons variable value) saved)))
+                ((symbol-function 'lispm-mail-save-accounts) (lambda (accounts) (setq lispm-mail-accounts accounts)))
+                ((symbol-function 'lispm-mail-stop-workers) #'ignore)
+                ((symbol-function 'lispm-mail-forget-password) (lambda (account) (push (plist-get account :id) removed)))
+                ((symbol-function 'yes-or-no-p) (lambda (_) t))
+                ((symbol-function 'lispm-mail) #'ignore))
+        (save-window-excursion
+          (let ((buffer (lispm-mail-settings))
+                (form nil))
+            (unwind-protect
+                (progn
+                  (with-current-buffer buffer
+                    (should (eq major-mode 'lispm-mail-settings-mode))
+                    (should (derived-mode-p 'lispm-ui-form-mode))
+                    (let ((text (buffer-string)))
+                      (should (string-match-p "○ ada@example\\.com +ada@example\\.com · default +Edit… +Remove" text))
+                      (should (string-match-p "○ Work +bob@example\\.org +Edit… +Remove" text))
+                      (should (string-match-p "Write new mail from: +ada@example\\.com ▾" text))
+                      (should (string-match-p "Check for new mail: +Every 15 minutes ▾" text))
+                      (should (string-match-p "They tell senders that you read their message" text))
+                      (should-not (string-match-p "Cancel" text))
+                      (should (string-match-p " Done $" text)))
+                    ;; A check box is saved as it is pressed, a pop-up menu as
+                    ;; it is chosen.
+                    (widget-apply-action (lispm-mail-test--widget 'lispm-mail-load-remote-pictures))
+                    (should (equal (car saved) '(lispm-mail-load-remote-pictures . t)))
+                    (let ((lispm-ui-form-choose-function (lambda (&rest _) '(5))))
+                      (widget-apply-action (lispm-mail-test--widget 'lispm-mail-check-interval)))
+                    (should (equal (car saved) '(lispm-mail-check-interval . 5)))
+                    (should (string-match-p "Every 5 minutes ▾" (buffer-string)))
+                    ;; Remove, under the second account, removes it.
+                    (widget-apply-action (lispm-mail-test--widget 'account-list 3))
+                    (should (equal removed '("bob")))
+                    (should (equal (mapcar #'lispm-mail-account-id lispm-mail-accounts) '("ada")))
+                    (should-not (string-match-p "bob@example" (buffer-string)))
+                    (should-not (string-match-p "Write new mail from" (buffer-string)))
+                    ;; Edit… opens the account's form.
+                    (widget-apply-action (lispm-mail-test--widget 'account-list 0)))
+                  (setq form (window-buffer))
+                  (with-current-buffer form
+                    (should (eq major-mode 'lispm-mail-account-mode))
+                    (should (equal (lispm-ui-form-value :address) "ada@example.com"))
+                    (should (string-match-p "Edit Account" (buffer-string)))
+                    ;; Cancelled, it shows the settings again.
+                    (lispm-mail-account-cancel))
+                  (should-not (buffer-live-p form))
+                  (should (eq (window-buffer) buffer))
+                  (with-current-buffer buffer
+                    (lispm-mail-settings-done))
+                  (should-not (buffer-live-p buffer)))
+              (dolist (each (list form buffer))
+                (when (buffer-live-p each) (kill-buffer each))))))))))
+
+(ert-deftest lispm-mail-test-account-form ()
+  "An account's form fills its servers in as its address is typed, takes
+a password as stars, says how Test Connection went where it says it,
+the rest of the form as it was, has its keys in its fields, and saves."
+  (lispm-mail-test-with-home
+   (let ((checked nil)
+         (kept nil))
+     (cl-letf (((symbol-function 'lispm-mail-check-servers)
+                (lambda (imap smtp callback) (setq checked (list imap smtp callback))))
+               ((symbol-function 'lispm-mail-set-password)
+                (lambda (account secret) (push (cons (plist-get account :id) secret) kept)))
+               ((symbol-function 'lispm-mail-save-accounts) (lambda (accounts) (setq lispm-mail-accounts accounts)))
+               ((symbol-function 'lispm-mail-stop-workers) #'ignore)
+               ((symbol-function 'lispm-mail-check) #'ignore)
+               ((symbol-function 'lispm-mail) #'ignore))
+       (save-window-excursion
+         (let ((form (lispm-mail-add-account)))
+           (unwind-protect
+               (with-current-buffer form
+                 (let ((icloud (lispm-mail-provider-settings "ada@icloud.com")))
+                   (should (eq major-mode 'lispm-mail-account-mode))
+                   (should (string-match-p "Add Account" (buffer-string)))
+                   ;; Its keys work in its fields.
+                   (goto-char (widget-field-start (alist-get :address (lispm-ui-form-widgets))))
+                   (should (eq (key-binding (kbd "C-c C-c")) #'lispm-mail-account-save))
+                   (should (eq (key-binding (kbd "C-c C-t")) #'lispm-mail-account-test))
+                   ;; Typed, the address fills the servers in once it is done.
+                   (lispm-mail-test--type :address "ada@icloud.com")
+                   (should (equal (lispm-ui-form-value :imap-host) (plist-get (plist-get icloud :imap) :host)))
+                   (should (lispm-mail-test-wait (lambda () (string-match-p "Servers of iCloud" (buffer-string)))))
+                   (should (equal (widget-value (alist-get :smtp-host (lispm-ui-form-widgets)))
+                                  (plist-get (plist-get icloud :smtp) :host)))
+                   ;; The password is shown as stars.
+                   (lispm-mail-test--type :password "s*cret")
+                   (should (equal (lispm-ui-form-value :password) "s*cret"))
+                   (should-not (string-match-p "cret" (buffer-string)))
+                   ;; Test Connection says how it went where it says it.
+                   (let ((field (alist-get :name (lispm-ui-form-widgets))))
+                     (goto-char (widget-field-start field))
+                     (let ((here (point)))
+                       (lispm-mail-account-test)
+                       (should (string-match-p "Status: Logging in to the servers…" (buffer-string)))
+                       (should (equal (plist-get (car checked) :password) "s*cret"))
+                       (funcall (nth 2 checked) '(:imap t :smtp "Refused"))
+                       (should (string-match-p "Status: ● Incoming (IMAP): logged in\n *● Outgoing (SMTP): Refused"
+                                               (buffer-string)))
+                       (should (eq (alist-get :name (lispm-ui-form-widgets)) field))
+                       (should (= (point) here))))
+                   (lispm-mail-account-save)))
+             (when (buffer-live-p form) (kill-buffer form)))))
+       (should (equal kept '(("ada" . "s*cret"))))
+       (should (equal (plist-get (plist-get (car lispm-mail-accounts) :imap) :host)
+                      (plist-get (plist-get (lispm-mail-provider-settings "ada@icloud.com") :imap) :host)))))))
 
 ;;;; Mailboxes and messages
 
