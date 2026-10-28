@@ -41,6 +41,12 @@ token, which logs in to the servers for an hour, and another, with which it gets
 never sees the password.  This is OAuth 2.0 as a program on a computer does it, with PKCE, the
 servers logged in to by SASL XOAUTH2.
 
+Google asks such a program for the secret of its client ID too.  LispM Mail's is kept out of
+its source: each release comes with it in =lispm-mail-secrets.eld=, written from the
+repository's secrets, and the App Store puts that file beside LispM Mail.  Run from a checkout,
+LispM Mail has none, and Gmail's sign-in says so; ~lispm-mail-google-client-secret~ takes the
+secret of a client ID of one's own.
+
 The password, or the token signing an account in, is kept in the macOS Keychain, given to its
 =security= program on its input, never on its command line; elsewhere, with auth-source, in the
 first of your ~auth-sources~.  Nothing else of an account is secret: it is kept with Customize,
@@ -126,6 +132,13 @@ speaks to a mail server: what the background Emacs does is tested on what imap.e
 parsed, one test starts a background Emacs to check a server that is not there, signing in is
 tested with a browser played on the loopback, and [[file:test/report.eml][test/report.eml]] is a message with text, HTML
 and an attachment.  LispM Kit is a checkout beside this one, or named by ~LISPM_KIT~.
+
+* Releases
+
+A release published on GitHub runs the =release= workflow: =make secrets= writes
+=lispm-mail-secrets.eld= from the repository's secret ~GOOGLE_CLIENT_SECRET~, and the file is
+attached to the release, its SHA-256 in the run's summary for the App Store's catalog to pin.
+A new secret comes with a new release.
 
 * License
 

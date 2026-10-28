@@ -414,6 +414,42 @@ and the code is exchanged with the client's secret."
         (should (eq (car exchanged) 'google))
         (should (equal (cadr (assoc "client_secret" (cdr exchanged))) "gsecret"))))))
 
+(ert-deftest lispm-mail-test-packaged-secret ()
+  "The secret LispM Mail is packaged with goes with its own client ID
+only, and one set takes its place."
+  (let* ((file (make-temp-file "lispm-mail-secrets" nil ".eld"
+                               "((google :client-id \"gclient\" :client-secret \"packaged\"))\n"))
+         (lispm-mail-secrets-file file)
+         (lispm-mail-google-client-id "gclient")
+         (lispm-mail-google-client-secret nil))
+    (unwind-protect
+        (progn
+          (should (equal (lispm-mail-sign-in-client-secret 'google) "packaged"))
+          (should (equal (plist-get (lispm-mail-sign-in-oauth 'google "R") :client-secret) "packaged"))
+          (let ((lispm-mail-google-client-secret "own"))
+            (should (equal (lispm-mail-sign-in-client-secret 'google) "own")))
+          (let ((lispm-mail-google-client-id "other"))
+            (should-not (lispm-mail-sign-in-client-secret 'google)))
+          (should-not (lispm-mail-sign-in-client-secret 'microsoft))
+          (with-temp-file file (insert "((google"))
+          (should-not (lispm-mail-sign-in-client-secret 'google))
+          (delete-file file)
+          (should-not (lispm-mail-sign-in-client-secret 'google)))
+      (when (file-exists-p file) (delete-file file)))))
+
+(ert-deftest lispm-mail-test-sign-in-without-secret ()
+  "Without the secret its provider asks for, the sign-in says so before
+the browser opens."
+  (let* ((lispm-mail-google-client-id "gclient")
+         (lispm-mail-google-client-secret nil)
+         (lispm-mail-secrets-file (expand-file-name "none.eld" temporary-file-directory))
+         (opened nil)
+         (lispm-mail-sign-in-browse-function (lambda (url) (setq opened url))))
+    (should (string-match-p "App Store"
+                            (cadr (should-error (lispm-mail-sign-in 'google "ada@gmail.com" #'ignore)
+                                                :type 'user-error))))
+    (should-not opened)))
+
 (ert-deftest lispm-mail-test-sign-in-refused ()
   "Refused on the provider's page, the sign-in says so."
   (let* ((lispm-mail-microsoft-client-id "client")

@@ -160,12 +160,20 @@ Gmail's scope, can be named here instead, with its secret in
   :group 'lispm-mail)
 
 (defcustom lispm-mail-google-client-secret nil
-  "The secret Google gives with `lispm-mail-google-client-id'.
-Google asks a program on a computer for it, though anyone may read
-it there, and so it is no secret: what keeps accounts safe is their
-owner's sign-in on Google's page."
-  :type '(choice (const :tag "None" nil) string)
+  "The secret Google gives with `lispm-mail-google-client-id', or nil
+for the one LispM Mail is packaged with, in `lispm-mail-secrets-file'.
+A client ID of one's own takes its own secret here."
+  :type '(choice (const :tag "Packaged" nil) string)
   :group 'lispm-mail)
+
+(defvar lispm-mail-secrets-file
+  (expand-file-name "lispm-mail-secrets.eld"
+                    (file-name-directory (or load-file-name buffer-file-name default-directory)))
+  "The file of the secrets LispM Mail is packaged with, beside it:
+\((KIND :client-id ID :client-secret SECRET) ...), KIND a key of
+`lispm-mail-sign-ins'.  The secrets are kept out of LispM Mail's
+source: its releases write this file from the repository's secrets,
+and the App Store puts it beside LispM Mail.")
 
 (defconst lispm-mail-sign-ins
   '((microsoft
@@ -212,9 +220,23 @@ accounts sign in so.")
   "Return LispM Mail's client ID at KIND's provider, or nil."
   (lispm-mail-sign-in--setting kind :client-id))
 
+(defun lispm-mail-packaged-secret (kind client-id)
+  "Return the secret LispM Mail is packaged with for CLIENT-ID at KIND's
+provider, from `lispm-mail-secrets-file', or nil."
+  (when (file-readable-p lispm-mail-secrets-file)
+    (let ((entry (alist-get kind (with-temp-buffer
+                                   (insert-file-contents lispm-mail-secrets-file)
+                                   (ignore-errors (read (current-buffer)))))))
+      (and (equal (plist-get entry :client-id) client-id)
+           (stringp (plist-get entry :client-secret))
+           (plist-get entry :client-secret)))))
+
 (defun lispm-mail-sign-in-client-secret (kind)
-  "Return the secret of LispM Mail's client ID at KIND's provider, or nil."
-  (lispm-mail-sign-in--setting kind :client-secret))
+  "Return the secret of LispM Mail's client ID at KIND's provider: the
+one set, or the one LispM Mail is packaged with, or nil."
+  (or (lispm-mail-sign-in--setting kind :client-secret)
+      (when-let* ((client-id (lispm-mail-sign-in-client-id kind)))
+        (lispm-mail-packaged-secret kind client-id))))
 
 (defun lispm-mail-sign-in-oauth (kind refresh-token &optional access-token)
   "Return what logs in to a server of an account signing in with KIND:

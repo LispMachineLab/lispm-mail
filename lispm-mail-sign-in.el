@@ -162,6 +162,12 @@ the sign-in up, CALLBACK then never called."
          (client-id (or (lispm-mail-sign-in-client-id kind)
                         (user-error "LispM Mail has no client ID at %s yet: see `%s'"
                                     (plist-get provider :name) (plist-get provider :client-id))))
+         (client-secret (or (lispm-mail-sign-in-client-secret kind)
+                            (when (plist-member provider :client-secret)
+                              (user-error "This LispM Mail has no secret for its client ID at %s: \
+install it from the App Store, or see `%s'"
+                                          (plist-get provider :name)
+                                          (plist-get provider :client-secret)))))
          (verifier (lispm-mail-sign-in--random))
          (state (lispm-mail-sign-in--random))
          (servers nil)
@@ -202,7 +208,7 @@ the sign-in up, CALLBACK then never called."
                (setq exchanging t)
                (lispm-mail-sign-in--exchange
                 kind `(("client_id" ,client-id)
-                       ("client_secret" ,(lispm-mail-sign-in-client-secret kind))
+                       ("client_secret" ,client-secret)
                        ("grant_type" "authorization_code")
                        ("code" ,(funcall said "code"))
                        ("redirect_uri" ,redirect)
