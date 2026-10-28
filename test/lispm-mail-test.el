@@ -583,6 +583,37 @@ password, and keeps the token got."
       (should-not (lispm-mail-seen-p (lispm-mail-message "ada" "INBOX" 5)))
       (should (= (plist-get (lispm-mail-mailbox "ada" "INBOX") :unseen) 1)))))
 
+(ert-deftest lispm-mail-test-flagged-roles-win ()
+  "A role the server flags a mailbox with leaves mailboxes only named so
+ordinary folders, as Gmail's labels an old program made; without flags,
+names still tell."
+  (lispm-mail-test-with-home
+    (let ((lispm-mail-accounts (list lispm-mail-test-account)))
+      (lispm-mail--set-mailboxes
+       "ada" '((:name "INBOX" :delimiter "/")
+               (:name "Drafts" :delimiter "/")
+               (:name "Sent Mail" :delimiter "/")
+               (:name "[Gmail]" :delimiter "/" :flags ("\\Noselect"))
+               (:name "[Gmail]/Drafts" :delimiter "/" :flags ("\\Drafts"))
+               (:name "[Gmail]/Sent Mail" :delimiter "/" :flags ("\\Sent"))
+               (:name "[Gmail]/Trash/Trash" :delimiter "/")
+               (:name "[Gmail]/Trash" :delimiter "/" :flags ("\\HasChildren" "\\Trash"))
+               (:name "Archive" :delimiter "/")))
+      (should (equal (mapcar (lambda (role) (lispm-mail-mailbox-of-role "ada" role))
+                             '(drafts sent trash archive))
+                     '("[Gmail]/Drafts" "[Gmail]/Sent Mail" "[Gmail]/Trash" "Archive")))
+      (dolist (name '("Drafts" "Sent Mail" "[Gmail]/Trash/Trash"))
+        (should-not (plist-get (lispm-mail-mailbox "ada" name) :role)))
+      (let ((requests nil))
+        (cl-letf (((symbol-function 'lispm-mail-request)
+                   (lambda (_id operation properties _callback)
+                     (push (cons operation properties) requests))))
+          (lispm-mail-delete "ada" "INBOX" '(5)))
+        (should (equal requests '((move :mailbox "INBOX" :uids (5) :to "[Gmail]/Trash")))))
+      (lispm-mail--set-mailboxes "ada" '((:name "INBOX") (:name "Sent") (:name "Trash")))
+      (should (equal (mapcar (lambda (role) (lispm-mail-mailbox-of-role "ada" role)) '(sent trash))
+                     '("Sent" "Trash"))))))
+
 (ert-deftest lispm-mail-test-delete-to-trash ()
   "Deleting moves to the Trash, and from the Trash deletes for good."
   (lispm-mail-test-with-home

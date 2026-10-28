@@ -365,19 +365,27 @@ background Emacs's `mailboxes' gives them, with :role.")
 A mailbox plays ROLE when its server says so with FLAG, else when its
 name, or the last part of it, is one of the NAMEs.")
 
-(defun lispm-mail-mailbox-role (mailbox)
-  "Return the role MAILBOX, a plist, plays, or nil."
+(defun lispm-mail--flagged-role (mailbox)
+  "Return the role MAILBOX, a plist, plays by its server's flag, or nil."
+  (let ((flags (plist-get mailbox :flags)))
+    (car (seq-find (lambda (role) (member-ignore-case (nth 1 role) flags)) lispm-mail-roles))))
+
+(defun lispm-mail-mailbox-role (mailbox &optional flagged)
+  "Return the role MAILBOX, a plist, plays, or nil.
+FLAGGED lists the roles mailboxes of its account play by their
+server's flags: those MAILBOX does not play by its name alone, as a
+server saying which mailbox is its Trash leaves another one called
+so an ordinary folder, a Gmail label an old program made, say."
   (let* ((name (plist-get mailbox :name))
          (delimiter (plist-get mailbox :delimiter))
          (last (if (and delimiter (not (string-empty-p delimiter)))
                    (car (last (split-string name (regexp-quote delimiter))))
-                 name))
-         (flags (plist-get mailbox :flags)))
+                 name)))
     (if (string-equal-ignore-case name "INBOX")
         'inbox
-      (or (car (seq-find (lambda (role) (member-ignore-case (nth 1 role) flags)) lispm-mail-roles))
+      (or (lispm-mail--flagged-role mailbox)
           (car (seq-find (lambda (role)
-                           (and (not (eq (car role) 'inbox))
+                           (and (not (memq (car role) (cons 'inbox flagged)))
                                 (or (member-ignore-case last (cddr role))
                                     (member-ignore-case name (cddr role)))))
                          lispm-mail-roles))))))
@@ -419,10 +427,11 @@ name, or the last part of it, is one of the NAMEs.")
 
 (defun lispm-mail--set-mailboxes (id mailboxes)
   "Keep MAILBOXES as account ID's, and say so."
-  (let ((mailboxes (lispm-mail--sort-mailboxes
-                    (mapcar (lambda (mailbox)
-                              (append mailbox (list :role (lispm-mail-mailbox-role mailbox))))
-                            mailboxes))))
+  (let* ((flagged (delq nil (mapcar #'lispm-mail--flagged-role mailboxes)))
+         (mailboxes (lispm-mail--sort-mailboxes
+                     (mapcar (lambda (mailbox)
+                               (append mailbox (list :role (lispm-mail-mailbox-role mailbox flagged))))
+                             mailboxes))))
     (puthash id mailboxes lispm-mail--mailboxes)
     (lispm-mail--write-file (expand-file-name "mailboxes.eld" (lispm-mail--account-directory id))
                             mailboxes)
