@@ -648,6 +648,165 @@ names still tell."
       (lispm-mail--note-new-mail "ada" "INBOX" (list (lispm-mail-test-message 8)) t nil)
       (should-not said))))
 
+;;;; Searching the server
+
+(defvar lispm-mail-test-imap-searches nil
+  "The searches the fake IMAP server was asked, the latest first: (KEY TEXT
+LITERAL), LITERAL non-nil when TEXT came as a literal.")
+
+(defun lispm-mail-test-imap-uids (set)
+  "Return the UIDs of SET, an IMAP message set of numbers and ranges."
+  (mapcan (lambda (part)
+            (if (string-match "\\`\\([0-9]+\\):\\([0-9]+\\)\\'" part)
+                (number-sequence (string-to-number (match-string 1 part))
+                                 (string-to-number (match-string 2 part)))
+              (list (string-to-number part))))
+          (split-string set ",")))
+
+(defun lispm-mail-test-imap-answer (process tag command messages capabilities search)
+  "Answer COMMAND, tagged TAG, on PROCESS, as a fake IMAP server of one
+mailbox holding MESSAGES, ((UID . HEADER) ...), with CAPABILITIES.
+SEARCH, a function of a search key and its text, gives the UIDs found."
+  (let ((answer
+         (cond
+          ((string-match "\\`CAPABILITY" command)
+           (format "* CAPABILITY IMAP4rev1 %s\r\n" capabilities))
+          ((string-match "\\`\\(SELECT\\|EXAMINE\\) " command)
+           (format "* %d EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY 7] UIDs valid\r\n* FLAGS (\\Seen)\r\n"
+                   (length messages)))
+          ((string-match "\\`UID SEARCH \\(?:CHARSET UTF-8 \\)?\\([A-Z-]+\\) \\(?:\"\\(.*\\)\"\\|{[0-9]+}\r\n\\(.*\\)\\)\\'"
+                         command)
+           (let* ((key (match-string 1 command))
+                  (quoted (match-string 2 command))
+                  (text (or (and quoted (replace-regexp-in-string "\\\\\\(.\\)" "\\1" quoted))
+                            (decode-coding-string (match-string 3 command) 'utf-8))))
+             (push (list key text (null quoted)) lispm-mail-test-imap-searches)
+             (format "* SEARCH%s\r\n" (mapconcat (lambda (uid) (format " %d" uid)) (funcall search key text) ""))))
+          ((string-match "\\`UID FETCH \\([0-9,:]+\\) " command)
+           (mapconcat (lambda (uid)
+                        (when-let* ((header (alist-get uid messages)))
+                          (format "* %d FETCH (UID %d FLAGS (\\Seen) INTERNALDATE \"27-Oct-2026 10:00:00 +0000\" RFC822.SIZE 400 BODYSTRUCTURE (\"text\" \"plain\" (\"charset\" \"utf-8\") NIL NIL \"7bit\" 5 1) BODY[HEADER.FIELDS (DATE FROM SUBJECT)] {%d}\r\n%s)\r\n"
+                                  (1+ (seq-position (mapcar #'car messages) uid)) uid
+                                  (string-bytes header) header)))
+                      (lispm-mail-test-imap-uids (match-string 1 command)) ""))
+          ((string-match "\\`LOGOUT" command) "* BYE\r\n")
+          (t ""))))
+    (process-send-string process (concat answer tag " OK done\r\n"))))
+
+(defun lispm-mail-test-imap-server (messages capabilities search)
+  "Start a fake IMAP server on the loopback; return its process.
+See `lispm-mail-test-imap-answer' for MESSAGES, CAPABILITIES and SEARCH.
+A command may end in one literal, as imap.el sends them."
+  (let (server)
+    (setq server
+          (make-network-process
+           :name "lispm-mail-test imap" :server t :host "127.0.0.1" :service t :coding 'binary
+           :log (lambda (_server client _message)
+                  (process-put server :clients (cons client (process-get server :clients)))
+                  (process-send-string client "* OK fake IMAP ready\r\n"))
+           :filter (lambda (process output)
+                     (let ((input (concat (process-get process :input) output))
+                           (more t))
+                       (while (and more (string-match "\r\n" input))
+                         (let* ((end (match-beginning 0))
+                                (line (substring input 0 end))
+                                (size (and (string-match "{\\([0-9]+\\)}\\'" line)
+                                           (string-to-number (match-string 1 line)))))
+                           (cond
+                            ((null size)
+                             (setq input (substring input (+ end 2)))
+                             (when (string-match "\\`\\([^ ]+\\) \\(.*\\)\\'" line)
+                               (lispm-mail-test-imap-answer process (match-string 1 line) (match-string 2 line)
+                                                            messages capabilities search)))
+                            ((>= (length input) (+ end 2 size 2))
+                             ;; The literal is here, and the line ending it.
+                             (let ((command (substring input 0 (+ end 2 size))))
+                               (setq input (substring input (+ end 2 size 2)))
+                               (process-put process :continued nil)
+                               (when (string-match "\\`\\([^ ]+\\) \\(\\(?:.\\|\n\\)*\\)\\'" command)
+                                 (lispm-mail-test-imap-answer process (match-string 1 command)
+                                                              (match-string 2 command)
+                                                              messages capabilities search))))
+                            (t
+                             (unless (process-get process :continued)
+                               (process-put process :continued t)
+                               (process-send-string process "+ go on\r\n"))
+                             (setq more nil)))))
+                       (process-put process :input input)))))
+    server))
+
+(defun lispm-mail-test-imap-stop (server)
+  "Stop SERVER, a fake IMAP server, and its connections."
+  (dolist (client (process-get server :clients))
+    (when (process-live-p client) (delete-process client)))
+  (when (process-live-p server) (delete-process server)))
+
+(ert-deftest lispm-mail-test-search-server ()
+  "A search on the server goes as Gmail's own search on Gmail, its text a
+literal in UTF-8 unless plain ASCII; elsewhere a search a word, the UIDs
+found by them all kept; the newest found come with their headers."
+  (let* ((messages '((3 . "Subject: One\r\nFrom: ada@example.com\r\n\r\n")
+                     (5 . "Subject: Two\r\nFrom: ada@example.com\r\n\r\n")
+                     (9 . "Subject: Three\r\nFrom: Grace <grace@navy.mil>\r\n\r\n")))
+         (lispm-mail-test-imap-searches nil)
+         (lispm-mail-worker--buffer nil)
+         (lispm-mail-worker--token nil)
+         (inhibit-message t)
+         (search (lambda (key text)
+                   (pcase (list key text)
+                     ((or '("X-GM-RAW" "from:ada réunion") '("X-GM-RAW" "from:ada \"lunch\"")) '(3 5 9))
+                     ('("TEXT" "lunch") '(3 5 9))
+                     ('("TEXT" "réunion") '(5 9 11)))))
+         (server nil))
+    (unwind-protect
+        (dolist (gmail '(t nil))
+          (setq server (lispm-mail-test-imap-server messages (if gmail "X-GM-EXT-1" "") search))
+          (let ((lispm-mail-worker--imap (list :host "127.0.0.1" :port (process-contact server :service)
+                                               :security 'none :user "ada" :password "pw")))
+            (if gmail
+                (let ((found (lispm-mail-worker--search
+                              '(:mailbox "[Gmail]/All Mail" :query "from:ada réunion" :limit 2))))
+                  (should (equal (car lispm-mail-test-imap-searches) '("X-GM-RAW" "from:ada réunion" t)))
+                  (should (equal (plist-get found :uidvalidity) "7"))
+                  (should (= (plist-get found :total) 3))
+                  (should (equal (mapcar (lambda (m) (list (plist-get m :uid) (plist-get m :subject)))
+                                         (plist-get found :headers))
+                                 '((9 "Three") (5 "Two"))))
+                  (should (equal (plist-get (car (plist-get found :headers)) :from)
+                                 '("Grace" . "grace@navy.mil")))
+                  ;; Plain ASCII goes quoted.
+                  (lispm-mail-worker--search '(:mailbox "[Gmail]/All Mail" :query "from:ada \"lunch\""))
+                  (should (equal (car lispm-mail-test-imap-searches)
+                                 '("X-GM-RAW" "from:ada \"lunch\"" nil))))
+              (setq lispm-mail-test-imap-searches nil)
+              (let ((found (lispm-mail-worker--search '(:mailbox "INBOX" :query " lunch réunion "))))
+                (should (equal (reverse lispm-mail-test-imap-searches)
+                               '(("TEXT" "lunch" nil) ("TEXT" "réunion" t))))
+                (should (= (plist-get found :total) 2))
+                (should (equal (mapcar (lambda (m) (plist-get m :uid)) (plist-get found :headers)) '(9 5))))
+              (should-error (lispm-mail-worker--search '(:mailbox "INBOX" :query "  ")))))
+          (lispm-mail-worker--drop-connection)
+          (lispm-mail-test-imap-stop server))
+      (lispm-mail-worker--drop-connection)
+      (when server (lispm-mail-test-imap-stop server)))))
+
+(ert-deftest lispm-mail-test-search-on-server ()
+  "A search asks the account's Emacs, in the mailbox of all its mail, or
+its Inbox without one, and says where it looked."
+  (lispm-mail-test-with-home
+    (let ((lispm-mail-accounts (list lispm-mail-test-account))
+          asked said)
+      (cl-letf (((symbol-function 'lispm-mail-request)
+                 (lambda (_id operation properties callback)
+                   (push (cons operation properties) asked)
+                   (funcall callback '(:uidvalidity 7 :total 0 :headers nil) nil))))
+        (lispm-mail-search-on-server "ada" "lunch" (lambda (found error) (setq said (list found error))))
+        (should (equal (car asked) '(search :mailbox "INBOX" :query "lunch" :limit 20)))
+        (should (equal said '((:mailbox "INBOX" :uidvalidity 7 :total 0 :headers nil) nil)))
+        (lispm-mail--set-mailboxes "ada" '((:name "INBOX") (:name "[Gmail]/All Mail" :flags ("\\All"))))
+        (lispm-mail-search-on-server "ada" "lunch" #'ignore nil 5)
+        (should (equal (car asked) '(search :mailbox "[Gmail]/All Mail" :query "lunch" :limit 5)))))))
+
 ;;;; Showing
 
 (defun lispm-mail-test-file (name)
@@ -695,6 +854,34 @@ names still tell."
   "A reply quotes the message's plain text."
   (should (string-match-p "\\`Here is the report\\."
                           (lispm-mail-view-plain-text (lispm-mail-test-file "report.eml")))))
+
+(ert-deftest lispm-mail-test-read-message ()
+  "A message is read, fetched first: its headers, text and attachments' names."
+  (lispm-mail-test-with-home
+    (let ((lispm-mail-accounts (list lispm-mail-test-account))
+          fetched said)
+      (cl-letf (((symbol-function 'lispm-mail-request)
+                 (lambda (_id operation properties callback)
+                   (push (cons operation properties) fetched)
+                   ;; As the background Emacs writes it.
+                   (make-directory (file-name-directory (plist-get properties :file)) t)
+                   (copy-file (lispm-mail-test-file "report.eml") (plist-get properties :file) t)
+                   (funcall callback 100 nil))))
+        (lispm-mail-read-message "ada" "INBOX" 4 (lambda (message error) (setq said (list message error))))
+        (should (equal (caar fetched) 'fetch))
+        (should-not (nth 1 said))
+        (let ((message (car said)))
+          (should (equal (plist-get message :subject) "Quarterly report"))
+          (should (equal (plist-get message :from) '("Grace Hopper" . "grace@navy.mil")))
+          (should (string-match-p "\\`Here is the report\\." (plist-get message :text)))
+          (should (equal (plist-get message :attachments) '("report.pdf"))))
+        ;; Kept, it is not fetched again.
+        (lispm-mail-read-message "ada" "INBOX" 4 #'ignore)
+        (should (= (length fetched) 1))
+        (cl-letf (((symbol-function 'lispm-mail-request)
+                   (lambda (_id _operation _properties callback) (funcall callback nil "The message is no longer there"))))
+          (lispm-mail-read-message "ada" "INBOX" 5 (lambda (message error) (setq said (list message error))))
+          (should (equal said '(nil "The message is no longer there"))))))))
 
 ;;;; Writing
 
@@ -761,6 +948,51 @@ names still tell."
               (should (string-search "\n\nBonjour" mime)))
           (set-buffer-modified-p nil)
           (kill-buffer))))))
+
+(ert-deftest lispm-mail-test-save-draft ()
+  "A message written by a program is kept in the Drafts mailbox, unsent and
+shown nowhere: a reply with its headers and the text it quotes."
+  (lispm-mail-test-with-home
+    (let ((lispm-mail-accounts (list lispm-mail-test-account))
+          (buffers (buffer-list))
+          (windows (window-list))
+          kept said)
+      (lispm-mail--set-mailboxes "ada" '((:name "INBOX") (:name "Drafts" :flags ("\\Drafts"))))
+      (cl-letf (((symbol-function 'lispm-mail-request)
+                 (lambda (_id operation properties callback)
+                   (when (eq operation 'append)
+                     (push (list (plist-get properties :mailbox) (plist-get properties :flags)
+                                 (with-temp-buffer
+                                   (insert-file-contents (plist-get properties :file))
+                                   (buffer-string)))
+                           kept))
+                   (funcall callback t nil))))
+        (lispm-mail-save-draft
+         (append (list :body "Thursday works.\n")
+                 (lispm-mail-reply-fields "ada" (list :from '("Grace Hopper" . "grace@navy.mil")
+                                                      :subject "Lunch" :message-id "<1@navy.mil>"
+                                                      :date 1793000000)
+                                          "Shall we?"))
+         (lambda (mailbox error) (setq said (list mailbox error))))
+        (should (equal said '("Drafts" nil)))
+        (pcase-let ((`(,mailbox ,flags ,text) (car kept)))
+          (should (equal mailbox "Drafts"))
+          (should (equal flags '("\\Draft" "\\Seen")))
+          (should (string-match-p "^From: Ada Lovelace <ada@example.com>$" text))
+          (should (string-match-p "^To: Grace Hopper <grace@navy.mil>$" text))
+          (should (string-match-p "^Subject: Re: Lunch$" text))
+          (should (string-match-p "^In-Reply-To: <1@navy.mil>$" text))
+          (should (string-search "Thursday works." text))
+          (should (string-search "> Shall we?" text)))
+        ;; No window showed it, and no buffer is left.
+        (should (equal (window-list) windows))
+        (should (seq-set-equal-p (seq-filter #'buffer-live-p buffers) (buffer-list)))
+        ;; Without a Drafts mailbox, it says so.
+        (lispm-mail--set-mailboxes "ada" '((:name "INBOX")))
+        (lispm-mail-save-draft '(:to "grace@navy.mil" :subject "Hi" :body "Hello")
+                               (lambda (mailbox error) (setq said (list mailbox error))))
+        (should (equal said '(nil "ada@example.com has no Drafts mailbox")))
+        (should (seq-set-equal-p (seq-filter #'buffer-live-p buffers) (buffer-list)))))))
 
 (ert-deftest lispm-mail-test-outbox-kept ()
   "A message not sent is in the Outbox of the Emacs after, to send again."

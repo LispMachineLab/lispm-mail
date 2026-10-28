@@ -63,6 +63,9 @@
 ;;              FLAGS) ...) :headers (MESSAGE ...)), FLAGS a list of
 ;;              strings, a MESSAGE as `lispm-mail-worker--message' makes
 ;;              it.  A UID of the window not in :flags is gone.
+;;   search     :mailbox :query, by Gmail's own search on Gmail, else for
+;;              every word of it, and :limit.  Answers (:uidvalidity
+;;              :total :headers (MESSAGE ...)), the newest :limit found.
 ;;   snippets   :mailbox :uids: the first words of each, ((UID . TEXT) ...)
 ;;   fetch      :mailbox :uid :file: the raw message written to the file.
 ;;   store      :mailbox :uids :add or :remove, a flag.
@@ -545,14 +548,70 @@ ENCODING and CHARSET: one line, quotations and markup left out."
                               (cons uid (remove "\\Recent" (imap-message-get uid 'FLAGS buffer))))
                             uids))
         (when missing
-          (lispm-mail-worker--forget-messages buffer)
-          (imap-fetch (lispm-mail-worker-set missing)
-                      (format "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (%s)])"
-                              (string-join lispm-mail-worker-header-fields " "))
-                      nil nil buffer)
-          (setq headers (mapcar (lambda (uid) (lispm-mail-worker--message uid buffer))
-                                (lispm-mail-worker--uids buffer))))))
+          (setq headers (lispm-mail-worker--headers buffer missing)))))
     (list :uidvalidity uidvalidity :exists exists :flags flags :headers headers)))
+
+(defun lispm-mail-worker--headers (buffer uids)
+  "Return the headers of the selected mailbox's messages UIDS, plists as
+`lispm-mail-worker--message' makes them, by UID, of those still there."
+  (lispm-mail-worker--forget-messages buffer)
+  (imap-fetch (lispm-mail-worker-set uids)
+              (format "(UID FLAGS INTERNALDATE RFC822.SIZE BODYSTRUCTURE BODY.PEEK[HEADER.FIELDS (%s)])"
+                      (string-join lispm-mail-worker-header-fields " "))
+              nil nil buffer)
+  (mapcar (lambda (uid) (lispm-mail-worker--message uid buffer))
+          (lispm-mail-worker--uids buffer)))
+
+(defun lispm-mail-worker--search-once (buffer key text)
+  "Return the UIDs of the selected mailbox's messages that the search KEY,
+one taking a string, finds for TEXT, on BUFFER's connection.
+TEXT goes as a literal in UTF-8 when it is not plain ASCII: imap.el ends
+a command after a literal, so it is the command's last argument."
+  (let ((literal (unless (string-match-p "\\`[ -~]*\\'" text)
+                   (generate-new-buffer " *lispm-mail search*"))))
+    (unwind-protect
+        (with-current-buffer buffer
+          (when literal
+            (with-current-buffer literal
+              (set-buffer-multibyte nil)
+              (insert (encode-coding-string text 'utf-8))))
+          (imap-mailbox-put 'search 'dummy)
+          (unless (imap-ok-p (imap-send-command-wait
+                              (if literal
+                                  (list (format "UID SEARCH CHARSET UTF-8 %s " key) literal)
+                                (format "UID SEARCH %s %s" key (lispm-mail-worker--string text)))))
+            (error "The server refused the search: %s" (or (imap-error-text buffer) "no reason given")))
+          (let ((found (imap-mailbox-get-1 'search imap-current-mailbox)))
+            (and (listp found) found)))
+      (when literal (kill-buffer literal)))))
+
+(defun lispm-mail-worker--search (properties)
+  "Return what the :mailbox of PROPERTIES holds that their :query finds:
+(:uidvalidity :total :headers), HEADERS those of the newest :limit
+messages found, 20 by default, the newest first.  Gmail searches with
+its own search, as its web page does; other servers find the messages
+holding every word of the query, in their headers or text."
+  (let* ((query (string-trim (or (plist-get properties :query) "")))
+         (mailbox (plist-get properties :mailbox))
+         (buffer (progn (when (string-empty-p query)
+                          (error "Nothing to search for"))
+                        (lispm-mail-worker--select mailbox)))
+         (uids (if (imap-capability 'X-GM-EXT-1 buffer)
+                   (lispm-mail-worker--search-once buffer "X-GM-RAW" query)
+                 ;; One search a word, as one literal ends a command.
+                 (let* ((words (split-string query nil t))
+                        (found (lispm-mail-worker--search-once buffer "TEXT" (car words))))
+                   (dolist (word (cdr words))
+                     (when found
+                       (setq found (seq-intersection
+                                    found (lispm-mail-worker--search-once buffer "TEXT" word)))))
+                   found)))
+         (newest (seq-take (sort (copy-sequence uids) #'>) (or (plist-get properties :limit) 20))))
+    (list :uidvalidity (imap-mailbox-get 'uidvalidity mailbox buffer)
+          :total (length uids)
+          :headers (and newest
+                        (sort (lispm-mail-worker--headers buffer newest)
+                              (lambda (a b) (> (plist-get a :uid) (plist-get b :uid))))))))
 
 (defun lispm-mail-worker--snippets (properties)
   "Return the first words of the messages PROPERTIES name: ((UID . TEXT) ...)."
@@ -889,6 +948,7 @@ next, which would otherwise wait in its buffer for more of the server."
   '((imap . lispm-mail-worker--connect)
     (mailboxes . lispm-mail-worker--mailboxes)
     (sync . lispm-mail-worker--sync)
+    (search . lispm-mail-worker--search)
     (snippets . lispm-mail-worker--snippets)
     (fetch . lispm-mail-worker--fetch)
     (store . lispm-mail-worker--store)
