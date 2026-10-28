@@ -5,7 +5,7 @@
 ;; Author: Ryan.K
 ;; URL: https://github.com/LispMachineLab/lispm-mail
 ;; Version: 0.3.0
-;; Package-Requires: ((emacs "30.1") (lispm-kit "0.1.0"))
+;; Package-Requires: ((emacs "30.1") (lispm-kit "0.1.0") (lispm-ui "0.3.0"))
 ;; Keywords: mail
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -57,6 +57,7 @@
 (require 'tabulated-list)
 (require 'lispm-kit-commands)
 (require 'lispm-mail-style)
+(require 'lispm-ui-text)
 (require 'lispm-mail-accounts)
 (require 'lispm-mail-data)
 (require 'lispm-mail-view)
@@ -250,9 +251,9 @@ DEPTH indents it under the folder it is in; BOLD sets it so, as one
 holding mail unread."
   (let ((start (point))
         (selected (equal place lispm-mail--place)))
-    (insert (lispm-mail-style-space (+ lispm-mail-sidebar-padding 18 (* 16 (or depth 0))))
+    (insert (lispm-ui-text-space (+ lispm-mail-sidebar-padding 18 (* 16 (or depth 0))))
             (lispm-mail-style-icon (or role 'folder))
-            (lispm-mail-style-space 6)
+            (lispm-ui-text-space 6)
             (propertize title 'face (and bold 'lispm-mail-strong))
             (if (and count (> count 0))
                 (propertize (format " (%d)" count) 'face (if bold 'lispm-mail-count 'lispm-mail-dim))
@@ -284,11 +285,11 @@ name, over its folders."
                                               lispm-mail-outbox)))
         (dolist (account lispm-mail-accounts)
           (let ((id (lispm-mail-account-id account)))
-            (insert (lispm-mail-style-space lispm-mail-sidebar-padding)
+            (insert (lispm-ui-text-space lispm-mail-sidebar-padding)
                     (propertize "▾" 'face 'lispm-mail-dim)
-                    (lispm-mail-style-space 5)
+                    (lispm-ui-text-space 5)
                     (lispm-mail-style-icon 'account)
-                    (lispm-mail-style-space 6)
+                    (lispm-ui-text-space 6)
                     (propertize (lispm-mail-account-title account) 'face 'lispm-mail-account-heading)
                     (lispm-mail--state-dot id)
                     (propertize "\n" 'line-spacing 3))
@@ -310,7 +311,7 @@ name, over its folders."
                            (and (not (memq role '(sent trash all))) unseen))
                          depth (and (memq role '(inbox nil)) unseen (> unseen 0)))
                       (unless (string-prefix-p "[" name)
-                        (insert (lispm-mail-style-space (+ lispm-mail-sidebar-padding 18 (* 16 depth)))
+                        (insert (lispm-ui-text-space (+ lispm-mail-sidebar-padding 18 (* 16 depth)))
                                 (propertize (lispm-mail--mailbox-title id name) 'face 'lispm-mail-dim)
                                 (propertize "\n" 'line-spacing 3)))))))))
           (insert (lispm-mail-style-blank-line)))
@@ -462,7 +463,7 @@ leave."
 (defun lispm-mail--draw-welcome ()
   "Draw the page asking for a first account."
   (cl-flet ((centred (text)
-              (insert (propertize " " 'display `(space :align-to (- center (,(/ (lispm-mail-style-width text) 2)))))
+              (insert (propertize " " 'display `(space :align-to (- center (,(/ (lispm-ui-text-width text) 2)))))
                       text "\n")))
     (insert (lispm-mail-style-blank-line))
     (centred (lispm-mail-style-icon 'inbox 64))
@@ -473,7 +474,7 @@ leave."
     (centred "QQ Mail, NetEase, Fastmail, or any server speaking IMAP.")
     (insert (lispm-mail-style-blank-line))
     (let ((label " Add Account… "))
-      (insert (propertize " " 'display `(space :align-to (- center (,(/ (lispm-mail-style-width label) 2))))))
+      (insert (propertize " " 'display `(space :align-to (- center (,(/ (lispm-ui-text-width label) 2))))))
       (insert-text-button label 'face 'lispm-mail-button 'mouse-face 'lispm-mail-button-pressed
                           'follow-link t 'help-echo "Add a mail account"
                           'action (lambda (_) (lispm-mail-add-account)))
@@ -484,15 +485,15 @@ leave."
   (dolist (entry lispm-mail-outbox)
     (let ((start (point))
           (failed (eq (plist-get entry :state) 'failed)))
-      (insert (lispm-mail-style-space 8)
+      (insert (lispm-ui-text-space 8)
               (lispm-mail-style-icon (if failed 'junk 'outbox) 14)
-              (lispm-mail-style-space 8)
+              (lispm-ui-text-space 8)
               (propertize (plist-get entry :subject) 'face 'lispm-mail-strong)
               "   "
               (if failed
                   (propertize (concat "Not sent: " (plist-get entry :error)) 'face 'lispm-mail-error)
                 (propertize "Sending…" 'face 'lispm-mail-dim))
-              (lispm-mail-style-to 120 t)
+              (lispm-ui-text-to 120 t)
               (propertize (lispm-mail-account-title (lispm-mail-account (plist-get entry :account)))
                           'face 'lispm-mail-dim)
               "\n")
@@ -502,7 +503,7 @@ leave."
   "Insert TEXT, saying the list is empty, centred under its top."
   (let ((text (propertize text 'face (or face 'lispm-mail-dim))))
     (insert (lispm-mail-style-blank-line)
-            (propertize " " 'display `(space :align-to (- center (,(/ (lispm-mail-style-width text) 2)))))
+            (propertize " " 'display `(space :align-to (- center (,(/ (lispm-ui-text-width text) 2)))))
             text "\n")))
 
 (defun lispm-mail--draw-list ()

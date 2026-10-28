@@ -44,6 +44,7 @@
 (require 'nnheader)
 (require 'lispm-kit-commands)
 (require 'lispm-mail-style)
+(require 'lispm-ui-text)
 (require 'lispm-mail-accounts)
 (require 'lispm-mail-data)
 (require 'lispm-mail-view)
@@ -357,13 +358,13 @@ This is one of `completion-at-point-functions'."
 
 (defun lispm-mail-compose--header-line ()
   "Return the composer's header line: its buttons, and whom it is from."
-  (concat (lispm-mail-style-space 12)
+  (concat (lispm-ui-text-space 12)
           (lispm-mail-compose--toolbar-button "Send" #'lispm-mail-compose-send)
-          (lispm-mail-style-space 8)
+          (lispm-ui-text-space 8)
           (lispm-mail-compose--toolbar-button "Attach" #'mml-attach-file)
-          (lispm-mail-style-space 8)
+          (lispm-ui-text-space 8)
           (lispm-mail-compose--toolbar-button "Save Draft" #'lispm-mail-compose-save-draft)
-          (lispm-mail-style-space 8)
+          (lispm-ui-text-space 8)
           (lispm-mail-compose--toolbar-button "Discard" #'message-kill-buffer)))
 
 (defun lispm-mail-compose--decorate ()
@@ -383,7 +384,7 @@ the text as a rule."
           (while (re-search-forward "^\\([A-Za-z-]+\\):[ \t]?" end t)
             (push (list (match-beginning 0) (match-end 0) (match-string 1)) names))
           (let ((column (+ 14 (apply #'max 0 (mapcar (lambda (name)
-                                                        (lispm-mail-style-width
+                                                        (lispm-ui-text-width
                                                          (propertize (concat (nth 2 name) ":")
                                                                      'face 'lispm-mail-compose-field)))
                                                       names)))))
@@ -393,8 +394,8 @@ the text as a rule."
                 (overlay-put overlay 'lispm-mail-compose t)
                 (overlay-put overlay 'invisible t)
                 (overlay-put overlay 'before-string
-                             (concat (lispm-mail-style-to (- column 6 (lispm-mail-style-width label)))
-                                     label (lispm-mail-style-to column))))))
+                             (concat (lispm-ui-text-to (- column 6 (lispm-ui-text-width label)))
+                                     label (lispm-ui-text-to column))))))
           (goto-char end)
           (looking-at ".*$")
           (let ((overlay (make-overlay (match-beginning 0) (match-end 0))))

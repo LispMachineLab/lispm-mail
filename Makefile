@@ -1,8 +1,9 @@
 EMACS ?= emacs
-# LispM Kit, with which the windows declare their commands: a checkout
-# beside this one by default.
+# LispM Kit, with which the windows declare their commands, and LispM UI,
+# whose forms the settings are: checkouts beside this one by default.
 LISPM_KIT ?= ../lispm-kit
-LOAD_PATH = -L . -L $(LISPM_KIT)
+LISPM_UI ?= ../lispm-ui
+LOAD_PATH = -L . -L $(LISPM_KIT) -L $(LISPM_UI)
 
 FILES = lispm-mail-worker.el lispm-mail-style.el lispm-mail-accounts.el lispm-mail-data.el lispm-mail-sign-in.el lispm-mail-view.el \
 	lispm-mail-compose.el lispm-mail-settings.el lispm-mail.el

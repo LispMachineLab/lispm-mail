@@ -46,6 +46,7 @@
 (require 'svg)
 (require 'browse-url)
 (require 'lispm-mail-style)
+(require 'lispm-ui-text)
 (require 'lispm-mail-accounts)
 (require 'lispm-mail-data)
 
@@ -262,9 +263,9 @@ for one's own."
 (defun lispm-mail-view--field (label value)
   "Insert a line of the header box: LABEL, right-aligned, then VALUE."
   (let ((label (propertize (concat label ":") 'face 'lispm-mail-sender)))
-    (insert (lispm-mail-style-to (- lispm-mail-view--label-width (lispm-mail-style-width label)))
+    (insert (lispm-ui-text-to (- lispm-mail-view--label-width (lispm-ui-text-width label)))
             label
-            (lispm-mail-style-to (+ lispm-mail-view--label-width 10))
+            (lispm-ui-text-to (+ lispm-mail-view--label-width 10))
             value
             (propertize "\n" 'line-spacing 2))))
 
@@ -274,7 +275,7 @@ name and size."
   (let ((name (lispm-mail-view-attachment-name handle))
         (size (lispm-mail-size-text (lispm-mail-view-attachment-size handle))))
     (concat (lispm-mail-style-icon 'document 14)
-            (lispm-mail-style-space 3)
+            (lispm-ui-text-space 3)
             (propertize (format "%s (%s)" name size)
                         'face 'lispm-mail-accent 'mouse-face 'highlight
                         'button t 'category 'default-button 'follow-link t
@@ -290,7 +291,7 @@ To, Cc, Subject, and ATTACHMENTS, handles, each a button."
          (lispm-mail-view--label-width
           ;; As wide as the widest name the box shows, and a margin.
           (+ 16 (apply #'max (mapcar (lambda (label)
-                                       (lispm-mail-style-width
+                                       (lispm-ui-text-width
                                         (propertize (concat label ":") 'face 'lispm-mail-sender)))
                                      (append '("From" "Date" "Subject")
                                              (and (plist-get headers :reply-to) '("Reply-To"))
@@ -314,7 +315,7 @@ To, Cc, Subject, and ATTACHMENTS, handles, each a button."
     (when attachments
       (lispm-mail-view--field (if (cdr attachments) "Attachments" "Attachment")
                               (mapconcat #'lispm-mail-view--attachment-button attachments
-                                         (lispm-mail-style-space 14))))
+                                         (lispm-ui-text-space 14))))
     (insert (lispm-mail-style-blank-line))
     (add-face-text-property start (point) 'lispm-mail-header-box t)
     (put-text-property start (point) 'lispm-mail-head t)
@@ -343,7 +344,7 @@ dim the signature."
                                                                'face (list :background
                                                                            (lispm-mail-style-colour
                                                                             'lispm-mail-quote-bar)))
-                                                   (lispm-mail-style-space 10))))))
+                                                   (lispm-ui-text-space 10))))))
         (put-text-property (match-beginning 0) (match-end 0) 'display bars)
         (add-face-text-property (match-end 0) (line-end-position) 'lispm-mail-quote)))
     (goto-char start)

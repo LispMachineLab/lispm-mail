@@ -21,6 +21,8 @@ prefix is ~lispm-mail-~.
   through its Bridge.
 - *lispm-kit*, [[https://github.com/LispMachineLab/lispm-kit][LispM Kit]], with which each window declares its commands once: their keys, their
   menu items and, for the main ones, the words of a button.  The App Store installs it first.
+- *lispm-ui*, [[https://github.com/LispMachineLab/lispm-ui][LispM UI]], whose forms the settings and an account's form are, laid out as
+  dialogs and drawn in its look wherever it draws.  The App Store installs it first too.
 
 Nothing else: the rest is Emacs.
 
@@ -148,7 +150,8 @@ shown at once when it is opened again, and each message read, opened again witho
 speaks to a mail server: what the background Emacs does is tested on what imap.el would have
 parsed, one test starts a background Emacs to check a server that is not there, signing in is
 tested with a browser played on the loopback, and [[file:test/report.eml][test/report.eml]] is a message with text, HTML
-and an attachment.  LispM Kit is a checkout beside this one, or named by ~LISPM_KIT~.
+and an attachment.  LispM Kit and LispM UI are checkouts beside this one, or named by
+~LISPM_KIT~ and ~LISPM_UI~.
 
 * Releases
 
