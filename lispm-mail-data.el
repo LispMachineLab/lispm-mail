@@ -86,8 +86,8 @@ once it is sent, or what went wrong.")
   "The background Emacsen, by account :id.")
 
 (defconst lispm-mail--priorities
-  '((imap . -1) (fetch . 0) (send . 1) (store . 1) (move . 1) (expunge . 1) (append . 1) (forget . 1)
-    (sync . 2) (mailboxes . 3) (snippets . 4))
+  '((imap . -1) (fetch . 0) (search . 0) (send . 1) (store . 1) (move . 1) (expunge . 1)
+    (append . 1) (forget . 1) (sync . 2) (mailboxes . 3) (snippets . 4))
   "Which requests go first, the lower before.")
 
 (defun lispm-mail--worker-file ()
@@ -752,6 +752,28 @@ went wrong; `lispm-mail-sent-functions' are told too."
          (lispm-mail-sync id sent))
        (run-hook-with-args 'lispm-mail-sent-functions id subject error)
        (when callback (funcall callback error))))))
+
+;;;; Searching the server
+
+(defun lispm-mail-search-mailbox (id)
+  "Return the mailbox of account ID its server is searched in, unless told
+another: the one holding all its mail, as Gmail's All Mail, else its Inbox."
+  (or (lispm-mail-mailbox-of-role id 'all) "INBOX"))
+
+(defun lispm-mail-search-on-server (id query callback &optional mailbox limit)
+  "Search account ID's MAILBOX on its server for QUERY: with Gmail's own
+search on Gmail, in its syntax, else for the messages holding every word
+of QUERY.  MAILBOX is `lispm-mail-search-mailbox''s unless given; the
+newest LIMIT messages found are told, 20 unless given.  Call CALLBACK
+with (:mailbox :uidvalidity :total :headers) and nil, HEADERS plists as
+the list knows messages, the newest first, or with nil and what went
+wrong.  What is found is not kept: `lispm-mail-fetch' gets a message."
+  (let ((mailbox (or mailbox (lispm-mail-search-mailbox id))))
+    (lispm-mail-request id 'search (list :mailbox mailbox :query query :limit (or limit 20))
+                        (lambda (found error)
+                          (if error
+                              (funcall callback nil error)
+                            (funcall callback (cons :mailbox (cons mailbox found)) nil))))))
 
 ;;;; Checking for mail
 

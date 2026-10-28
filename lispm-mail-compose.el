@@ -210,6 +210,17 @@ It goes in the background; it is kept in the Outbox meanwhile."
 (defun lispm-mail-compose-save-draft ()
   "Keep the message in its account's Drafts mailbox, on the server."
   (interactive)
+  (message "Saving the draft…")
+  (lispm-mail-compose--save-draft
+   (lambda (drafts error)
+     (if error
+         (message "Could not save the draft: %s" error)
+       (message "Draft saved in %s" drafts)))))
+
+(defun lispm-mail-compose--save-draft (callback)
+  "Keep the message in the current buffer in its account's Drafts mailbox,
+on the server; call CALLBACK with the mailbox and nil, or with nil and
+what went wrong."
   (let* ((account (lispm-mail-compose--from-account))
          (id (lispm-mail-account-id account))
          (drafts (or (lispm-mail-mailbox-of-role id 'drafts)
@@ -222,18 +233,33 @@ It goes in the background; it is kept in the Outbox meanwhile."
         (set-buffer-multibyte nil)
         (insert (encode-coding-string mime 'utf-8))))
     (set-file-modes file #o600)
-    (message "Saving the draft…")
     (lispm-mail-request id 'append
                         (list :mailbox drafts :file file :flags '("\\Draft" "\\Seen")
                               :replace lispm-mail-compose--message-id)
                         (lambda (_ error)
                           (delete-file file)
-                          (if error
-                              (message "Could not save the draft: %s" error)
+                          (unless error
                             (when (buffer-live-p buffer)
                               (with-current-buffer buffer (set-buffer-modified-p nil)))
-                            (lispm-mail-sync id drafts)
-                            (message "Draft saved in %s" drafts))))))
+                            (lispm-mail-sync id drafts))
+                          (funcall callback (and (not error) drafts) error)))))
+
+(defun lispm-mail-save-draft (fields callback)
+  "Keep a message written with FIELDS, keys and values of
+`lispm-mail-compose', in its account's Drafts mailbox on the server,
+unsent and unseen: whoever reads mail sends it from there.  Call CALLBACK
+with the mailbox and nil, or with nil and what went wrong."
+  (let ((buffer (apply #'lispm-mail-compose :switch-function #'ignore fields)))
+    (cl-flet ((done (drafts error)
+                (when (buffer-live-p buffer)
+                  (with-current-buffer buffer (set-buffer-modified-p nil))
+                  (let ((kill-buffer-query-functions nil))
+                    (kill-buffer buffer)))
+                (funcall callback drafts error)))
+      (condition-case err
+          (with-current-buffer buffer
+            (lispm-mail-compose--save-draft #'done))
+        (error (done nil (error-message-string err)))))))
 
 ;;;; Accounts
 
@@ -554,6 +580,14 @@ Return its buffer."
 (defun lispm-mail-reply (id headers file &optional all)
   "Reply to the message of FILE, its HEADERS a plist, of account ID.
 With ALL, to everyone it went to as well."
+  (apply #'lispm-mail-compose
+         (lispm-mail-reply-fields id headers (lispm-mail-view-plain-text file) all)))
+
+(defun lispm-mail-reply-fields (id headers text &optional all)
+  "Return what a reply to the message of HEADERS, a plist, and TEXT, of
+account ID, is written with: keys and values of `lispm-mail-compose',
+:account :to :cc :subject :replying and :quote.  With ALL, it goes to
+everyone the message went to as well."
   (let* ((account (or (lispm-mail-account id) (lispm-mail-default-account)))
          (own (plist-get account :address))
          (to (or (plist-get headers :reply-to) (list (plist-get headers :from))))
@@ -569,13 +603,12 @@ With ALL, to everyone it went to as well."
                                                 (string-equal-ignore-case (cdr other) (cdr entry)))
                                               to)))
                               (append (plist-get headers :to) (plist-get headers :cc))))))
-    (lispm-mail-compose
-     :account account
-     :to (lispm-mail-compose--addresses to)
-     :cc (and cc (lispm-mail-compose--addresses cc))
-     :subject (lispm-mail-compose--subject "Re" (plist-get headers :subject))
-     :replying (cons (plist-get headers :message-id) (plist-get headers :references))
-     :quote (lispm-mail-compose--quote headers (lispm-mail-view-plain-text file)))))
+    (list :account account
+          :to (lispm-mail-compose--addresses to)
+          :cc (and cc (lispm-mail-compose--addresses cc))
+          :subject (lispm-mail-compose--subject "Re" (plist-get headers :subject))
+          :replying (cons (plist-get headers :message-id) (plist-get headers :references))
+          :quote (lispm-mail-compose--quote headers text))))
 
 (defun lispm-mail-forward (id headers file)
   "Forward the message of FILE, its HEADERS a plist, of account ID, attached."

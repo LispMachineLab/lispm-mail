@@ -116,6 +116,23 @@ links write with it (~mail-user-agent~), Read Mail opens it (~read-mail-command~
 flag of ~display-time-mode~ shows its unread mail (~display-time-mail-function~), each only while
 left as Emacs has it, never over a choice of yours.
 
+* For programs
+
+Programs, agents among them, search, read and write mail with the accounts added, without the
+window:
+
+- ~lispm-mail-search-on-server~ searches an account's mail on its server: with Gmail's own
+  search on Gmail, in its syntax (=from:= =subject:= =after:= =has:attachment= …), in All Mail;
+  elsewhere for the messages holding every word, in the Inbox, or a mailbox named.
+- ~lispm-mail-read-message~ reads a message, fetched first: its headers, its text, the names of
+  its attachments.  It is not marked read.
+- ~lispm-mail-save-draft~ keeps a message in the account's Drafts mailbox, unsent;
+  ~lispm-mail-reply-fields~ gives what a reply is written with.  You send it from Drafts.
+- ~lispm-mail-move~ and ~lispm-mail-delete~ move messages and delete them, to the Trash.
+
+Each calls back once the server has answered.  The App Store's skill "Use Mail" gives LispM's
+agents these as tools.
+
 * How it works
 
 Each account has an Emacs of its own in the background, in batch, which loads

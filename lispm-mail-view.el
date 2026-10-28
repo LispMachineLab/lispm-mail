@@ -47,6 +47,7 @@
 (require 'browse-url)
 (require 'lispm-mail-style)
 (require 'lispm-mail-accounts)
+(require 'lispm-mail-data)
 
 (declare-function lispm-mail-worker-date "lispm-mail-worker" (text))
 
@@ -536,6 +537,31 @@ REMOTE-PICTURES-P :attachments HANDLES)."
                    (mm-shr part))))))
           (string-trim (buffer-substring-no-properties (point-min) (point-max))))
       (mm-destroy-parts handle))))
+
+(defun lispm-mail-read-message (id mailbox uid callback)
+  "Read message UID of MAILBOX of account ID, fetched first unless it was:
+call CALLBACK with its headers, a plist as `lispm-mail-view-parse' gives
+them, with :text, its text as a reply quotes it, and :attachments, the
+names of its attachments, and nil; or with nil and what went wrong.
+Reading it does not mark it read."
+  (lispm-mail-fetch
+   id mailbox uid
+   (lambda (file error)
+     (if error
+         (funcall callback nil error)
+       (pcase-let ((`(,headers . ,handle) (condition-case err
+                                               (lispm-mail-view-parse file)
+                                             (error (list (error-message-string err))))))
+         (if (stringp headers)
+             (funcall callback nil headers)
+           (let ((attachments (unwind-protect
+                                  (mapcar #'lispm-mail-view-attachment-name
+                                          (cdr (lispm-mail-view-parts handle)))
+                                (mm-destroy-parts handle))))
+             (funcall callback
+                      (append headers (list :text (lispm-mail-view-plain-text file)
+                                            :attachments attachments))
+                      nil))))))))
 
 (provide 'lispm-mail-view)
 ;;; lispm-mail-view.el ends here
