@@ -981,7 +981,8 @@ shown nowhere: a reply with its headers and the text it quotes."
           (should (string-match-p "^From: Ada Lovelace <ada@example.com>$" text))
           (should (string-match-p "^To: Grace Hopper <grace@navy.mil>$" text))
           (should (string-match-p "^Subject: Re: Lunch$" text))
-          (should (string-match-p "^In-Reply-To: <1@navy.mil>$" text))
+          ;; Emacs 30's message mode adds a comment after it.
+          (should (string-match-p "^In-Reply-To: <1@navy.mil>" text))
           (should (string-search "Thursday works." text))
           (should (string-search "> Shall we?" text)))
         ;; No window showed it, and no buffer is left.
