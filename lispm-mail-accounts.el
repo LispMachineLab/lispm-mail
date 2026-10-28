@@ -28,7 +28,10 @@
 ;; servers, found from the address for the providers most people have
 ;; (`lispm-mail-providers') or asked of Thunderbird's database of
 ;; providers; and their passwords, kept in the macOS Keychain or with
-;; auth-source, never in the accounts themselves.
+;; auth-source, never in the accounts themselves.  An account of a
+;; provider that lets mail programs in only through its own page, as
+;; Outlook.com and Gmail do, signs in there instead (lispm-mail-sign-in.el),
+;; and what it gets, a token, is kept as a password would be.
 
 ;;; Code:
 
@@ -58,6 +61,9 @@
 :sent       the mailbox mail sent is kept in, nil to find it, or
             `server' for a server keeping it itself, as Gmail does
 :signature  the text put under each message written, or nil
+:sign-in    nil for an account logging in with its password, or a
+            key of `lispm-mail-sign-ins', as `microsoft', for one
+            signing in on its provider's own page
 
 Its password is not here: see `lispm-mail-password-store'.  The
 settings window, \\[lispm-mail-settings], edits them."
@@ -134,20 +140,135 @@ settings window, \\[lispm-mail-settings], edits them."
 
 ;;;; Providers
 
+(defcustom lispm-mail-microsoft-client-id nil
+  "The client ID Microsoft knows LispM Mail by, to sign Outlook.com and
+Microsoft 365 accounts in, or nil while LispM Mail has none.
+An application registered with Microsoft for personal and work
+accounts, its redirect http://localhost for mobile and desktop
+applications, can be named here instead."
+  :type '(choice (const :tag "None" nil) string)
+  :group 'lispm-mail)
+
+(defcustom lispm-mail-google-client-id
+  "232170540593-m7o557hrusmbalsqorhqd4ckikmu4u4v.apps.googleusercontent.com"
+  "The client ID Google knows LispM Mail by, to sign Gmail and Google
+Workspace accounts in, or nil for none.
+An OAuth client of Google Cloud for desktop applications, allowed
+Gmail's scope, can be named here instead, with its secret in
+`lispm-mail-google-client-secret'."
+  :type '(choice (const :tag "None" nil) string)
+  :group 'lispm-mail)
+
+(defcustom lispm-mail-google-client-secret nil
+  "The secret Google gives with `lispm-mail-google-client-id', or nil
+for the one LispM Mail is packaged with, in `lispm-mail-secrets-file'.
+A client ID of one's own takes its own secret here."
+  :type '(choice (const :tag "Packaged" nil) string)
+  :group 'lispm-mail)
+
+(defvar lispm-mail-secrets-file
+  (expand-file-name "lispm-mail-secrets.eld"
+                    (file-name-directory (or load-file-name buffer-file-name default-directory)))
+  "The file of the secrets LispM Mail is packaged with, beside it:
+\((KIND :client-id ID :client-secret SECRET) ...), KIND a key of
+`lispm-mail-sign-ins'.  The secrets are kept out of LispM Mail's
+source: its releases write this file from the repository's secrets,
+and the App Store puts it beside LispM Mail.")
+
+(defconst lispm-mail-sign-ins
+  '((microsoft
+     :name "Microsoft"
+     :authorize "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+     :token "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+     :scope "https://outlook.office.com/IMAP.AccessAsUser.All https://outlook.office.com/SMTP.Send offline_access"
+     :client-id lispm-mail-microsoft-client-id
+     :redirect "http://localhost:%d"
+     :parameters (("response_mode" "query"))
+     :hosts ("outlook.office365.com" "imap-mail.outlook.com"))
+    (google
+     :name "Google"
+     :authorize "https://accounts.google.com/o/oauth2/v2/auth"
+     :token "https://oauth2.googleapis.com/token"
+     :scope "https://mail.google.com/"
+     :client-id lispm-mail-google-client-id
+     :client-secret lispm-mail-google-client-secret
+     :redirect "http://127.0.0.1:%d"
+     ;; A token to ask again with, given at each sign-in, not the first only.
+     :parameters (("access_type" "offline") ("prompt" "consent"))
+     :hosts ("imap.gmail.com")))
+  "The providers whose own page signs accounts in: (KIND . PROPERTIES).
+:name says whose page it is; :authorize and :token are its OAuth 2.0
+endpoints; :scope what is asked for, the account's mail to read and
+send, and a token to ask again with; :client-id the variable naming
+LispM Mail there, and :client-secret the one giving the secret that
+comes with it, if the provider asks for one; :redirect where the
+browser comes back to, %d the port; :parameters more the page is
+asked with, ((NAME VALUE) ...); :hosts the IMAP servers whose
+accounts sign in so.")
+
+(defun lispm-mail-sign-in-name (kind)
+  "Return whose page signs KIND's accounts in, as \"Microsoft\"."
+  (plist-get (alist-get kind lispm-mail-sign-ins) :name))
+
+(defun lispm-mail-sign-in--setting (kind key)
+  "Return the value of the variable KIND's KEY names, if a string, or nil."
+  (when-let* ((variable (plist-get (alist-get kind lispm-mail-sign-ins) key)))
+    (let ((value (symbol-value variable)))
+      (and (stringp value) (not (string-blank-p value)) value))))
+
+(defun lispm-mail-sign-in-client-id (kind)
+  "Return LispM Mail's client ID at KIND's provider, or nil."
+  (lispm-mail-sign-in--setting kind :client-id))
+
+(defun lispm-mail-packaged-secret (kind client-id)
+  "Return the secret LispM Mail is packaged with for CLIENT-ID at KIND's
+provider, from `lispm-mail-secrets-file', or nil."
+  (when (file-readable-p lispm-mail-secrets-file)
+    (let ((entry (alist-get kind (with-temp-buffer
+                                   (insert-file-contents lispm-mail-secrets-file)
+                                   (ignore-errors (read (current-buffer)))))))
+      (and (equal (plist-get entry :client-id) client-id)
+           (stringp (plist-get entry :client-secret))
+           (plist-get entry :client-secret)))))
+
+(defun lispm-mail-sign-in-client-secret (kind)
+  "Return the secret of LispM Mail's client ID at KIND's provider: the
+one set, or the one LispM Mail is packaged with, or nil."
+  (or (lispm-mail-sign-in--setting kind :client-secret)
+      (when-let* ((client-id (lispm-mail-sign-in-client-id kind)))
+        (lispm-mail-packaged-secret kind client-id))))
+
+(defun lispm-mail-sign-in-oauth (kind refresh-token &optional access-token)
+  "Return what logs in to a server of an account signing in with KIND:
+the :oauth plist of `lispm-mail-server', its REFRESH-TOKEN kept, and
+an ACCESS-TOKEN when one was got just now."
+  (let ((provider (alist-get kind lispm-mail-sign-ins)))
+    (list :token-url (plist-get provider :token)
+          :client-id (lispm-mail-sign-in-client-id kind)
+          :client-secret (lispm-mail-sign-in-client-secret kind)
+          :scope (plist-get provider :scope)
+          :refresh-token refresh-token
+          :access-token access-token)))
+
 (defconst lispm-mail-providers
   '(("Gmail" ("gmail.com" "googlemail.com")
      :imap (:host "imap.gmail.com" :port 993 :security tls)
      :smtp (:host "smtp.gmail.com" :port 465 :security tls)
      :sent server
-     :note "Gmail asks for an app password, made at myaccount.google.com/apppasswords, with 2-Step Verification on.")
+     :sign-in google)
     ("iCloud" ("icloud.com" "me.com" "mac.com")
      :imap (:host "imap.mail.me.com" :port 993 :security tls)
      :smtp (:host "smtp.mail.me.com" :port 587 :security starttls)
      :note "iCloud asks for an app-specific password, made at account.apple.com.")
-    ("Outlook" ("outlook.com" "hotmail.com" "live.com" "msn.com")
+    ("Outlook.com" ("outlook.com" "hotmail.com" "live.com" "msn.com" "passport.com"
+                    "outlook.co.uk" "hotmail.co.uk" "live.co.uk" "outlook.fr" "hotmail.fr" "live.fr"
+                    "outlook.de" "hotmail.de" "live.de" "outlook.jp" "hotmail.co.jp" "live.jp"
+                    "outlook.it" "hotmail.it" "outlook.es" "hotmail.es" "live.cn" "live.ca"
+                    "live.com.au" "outlook.com.au")
      :imap (:host "outlook.office365.com" :port 993 :security tls)
      :smtp (:host "smtp-mail.outlook.com" :port 587 :security starttls)
-     :note "Outlook.com may refuse passwords and allow only Microsoft's own sign-in.")
+     :sent server
+     :sign-in microsoft)
     ("Yahoo" ("yahoo.com" "ymail.com" "rocketmail.com")
      :imap (:host "imap.mail.yahoo.com" :port 993 :security tls)
      :smtp (:host "smtp.mail.yahoo.com" :port 465 :security tls)
@@ -200,7 +321,9 @@ settings window, \\[lispm-mail-settings], edits them."
   "The providers whose servers are known: (NAME DOMAINS . SETTINGS).
 SETTINGS give :imap and :smtp as `lispm-mail-accounts' does, without
 :user, which is the address; :sent when the server keeps mail sent;
-and :note, what to know for the password.")
+:sign-in, a key of `lispm-mail-sign-ins', for a provider whose
+accounts sign in on its own page; and :note, what to know for the
+password.")
 
 (defun lispm-mail-domain (address)
   "Return the domain of ADDRESS, in lower case, or nil."
@@ -214,16 +337,24 @@ and :note, what to know for the password.")
 
 (defun lispm-mail-provider-settings (address)
   "Return the servers of ADDRESS's provider, if known: a plist
-\(:provider NAME :imap SERVER :smtp SERVER :sent SENT :note NOTE),
-each server's :user the address."
+\(:provider NAME :imap SERVER :smtp SERVER :sent SENT :sign-in KIND
+:note NOTE), each server's :user the address."
   (when-let* ((provider (lispm-mail-provider address)))
     (let ((settings (cddr provider))
           (address (string-trim address)))
-      (list :provider (car provider)
-            :imap (append (plist-get settings :imap) (list :user address))
-            :smtp (append (plist-get settings :smtp) (list :user address))
-            :sent (plist-get settings :sent)
-            :note (plist-get settings :note)))))
+      (append (list :provider (car provider)
+                    :imap (append (plist-get settings :imap) (list :user address))
+                    :smtp (append (plist-get settings :smtp) (list :user address)))
+              (cl-loop for key in '(:sent :sign-in :note)
+                       append (list key (plist-get settings key)))))))
+
+(defun lispm-mail-sign-in-of-host (host)
+  "Return how an account whose IMAP server is HOST signs in: a key of
+`lispm-mail-sign-ins', or nil for its password."
+  (seq-some (lambda (entry)
+              (and (member (downcase (or host "")) (plist-get (cdr entry) :hosts))
+                   (car entry)))
+            lispm-mail-sign-ins))
 
 (defun lispm-mail-guess-settings (address)
   "Return servers guessed from ADDRESS's domain, as most providers name them."
@@ -278,9 +409,12 @@ as `lispm-mail-provider-settings' does, or nil."
                           (dom-by-tag dom 'outgoingServer)))
           (name (lispm-mail--dom-text dom 'displayName)))
       (when (and imap smtp)
-        (list :provider (and (not (string-empty-p name)) name)
-              :imap (server imap)
-              :smtp (server smtp))))))
+        (let* ((imap (server imap))
+               (sign-in (lispm-mail-sign-in-of-host (plist-get imap :host))))
+          (append (list :provider (and (not (string-empty-p name)) name)
+                        :imap imap
+                        :smtp (server smtp))
+                  (and sign-in (list :sign-in sign-in))))))))
 
 (defun lispm-mail-ask-autoconfig (address callback)
   "Ask Thunderbird's database for the servers of ADDRESS, in the background.
@@ -374,7 +508,9 @@ command line, where other programs could read it."
           :port (number-to-string (or (plist-get imap :port) 993)))))
 
 (defun lispm-mail-password (account)
-  "Return ACCOUNT's password, or nil when none is kept."
+  "Return ACCOUNT's password, or nil when none is kept.
+For an account signing in on its provider's page, it is the token
+signing it in again, the refresh token."
   (let ((id (lispm-mail-account-id account)))
     (or (gethash id lispm-mail--passwords)
         (when-let* ((password
@@ -414,9 +550,16 @@ command line, where other programs could read it."
     (_ (apply #'auth-source-forget (lispm-mail--auth-source-spec account)))))
 
 (defun lispm-mail-server (account which)
-  "Return ACCOUNT's server WHICH, `imap' or `smtp', with its password."
-  (let ((server (plist-get account (if (eq which 'imap) :imap :smtp))))
-    (append (list :password (lispm-mail-password account)) server)))
+  "Return ACCOUNT's server WHICH, `imap' or `smtp', with what logs in to
+it: its :password, or, for an account signing in on its provider's
+page, its :oauth, as `lispm-mail-sign-in-oauth' makes it, nil while it
+is not signed in."
+  (let ((server (plist-get account (if (eq which 'imap) :imap :smtp)))
+        (secret (lispm-mail-password account)))
+    (append (if-let* ((kind (plist-get account :sign-in)))
+                (list :oauth (and secret (lispm-mail-sign-in-oauth kind secret)))
+              (list :password secret))
+            server)))
 
 (provide 'lispm-mail-accounts)
 ;;; lispm-mail-accounts.el ends here

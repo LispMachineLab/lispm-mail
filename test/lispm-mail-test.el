@@ -207,6 +207,307 @@
   "What the Keychain is given is quoted as its program reads it."
   (should (equal (lispm-mail--keychain-quote "p a\"ss\\x") "\"p a\\\"ss\\\\x\"")))
 
+;;;; Signing in on a provider's page
+
+(defun lispm-mail-test-http-response (status json)
+  "Return a buffer holding an HTTP response of STATUS with JSON, a string."
+  (let ((buffer (generate-new-buffer " *lispm-mail-test http*")))
+    (with-current-buffer buffer
+      (set-buffer-multibyte nil)
+      (insert (format "HTTP/1.1 %s\r\nContent-Type: application/json\r\n\r\n" status)
+              (encode-coding-string json 'utf-8)))
+    buffer))
+
+(ert-deftest lispm-mail-test-sign-in-providers ()
+  "Outlook.com signs in on Microsoft's page, Gmail on Google's."
+  (let ((outlook (lispm-mail-provider-settings "ada@Hotmail.com")))
+    (should (eq (plist-get outlook :sign-in) 'microsoft))
+    (should (eq (plist-get outlook :sent) 'server))
+    (should (equal (plist-get outlook :imap)
+                   '(:host "outlook.office365.com" :port 993 :security tls :user "ada@Hotmail.com"))))
+  (should (eq (plist-get (lispm-mail-provider-settings "ada@live.cn") :sign-in) 'microsoft))
+  (let ((gmail (lispm-mail-provider-settings "ada@gmail.com")))
+    (should (eq (plist-get gmail :sign-in) 'google))
+    (should-not (plist-get gmail :note)))
+  (should-not (plist-get (lispm-mail-provider-settings "ada@icloud.com") :sign-in))
+  (should (eq (lispm-mail-sign-in-of-host "Outlook.Office365.com") 'microsoft))
+  ;; A Google Workspace domain, its servers Gmail's, signs in on Google's page too.
+  (should (eq (lispm-mail-sign-in-of-host "imap.gmail.com") 'google))
+  (should-not (lispm-mail-sign-in-of-host "imap.example.com")))
+
+(ert-deftest lispm-mail-test-sign-in-server ()
+  "A signed-in account's servers log in with its token, the others with passwords."
+  (lispm-mail-test-with-home
+    (let* ((lispm-mail-microsoft-client-id "client")
+           (account (append '(:id "out" :address "ada@outlook.com" :sign-in microsoft)
+                            (cddr (lispm-mail-provider-settings "ada@outlook.com")))))
+      (should (equal (lispm-mail-server account 'imap)
+                     '(:oauth nil :host "outlook.office365.com" :port 993 :security tls
+                              :user "ada@outlook.com")))
+      (puthash "out" "refresh" lispm-mail--passwords)
+      (let ((oauth (plist-get (lispm-mail-server account 'smtp) :oauth)))
+        (should (equal (plist-get oauth :refresh-token) "refresh"))
+        (should (equal (plist-get oauth :client-id) "client"))
+        (should (string-match-p "/oauth2/v2.0/token\\'" (plist-get oauth :token-url)))
+        (should (string-match-p "SMTP.Send" (plist-get oauth :scope))))
+      (should-not (plist-get (plist-get (lispm-mail-server account 'smtp) :oauth) :client-secret))
+      (let* ((lispm-mail-google-client-id "gclient")
+             (lispm-mail-google-client-secret "gsecret")
+             (gmail (append '(:id "gm" :address "ada@gmail.com" :sign-in google)
+                            (cddr (lispm-mail-provider-settings "ada@gmail.com")))))
+        (puthash "gm" "grefresh" lispm-mail--passwords)
+        (let ((oauth (plist-get (lispm-mail-server gmail 'imap) :oauth)))
+          (should (equal (plist-get oauth :client-id) "gclient"))
+          (should (equal (plist-get oauth :client-secret) "gsecret"))
+          (should (equal (plist-get oauth :token-url) "https://oauth2.googleapis.com/token"))
+          (should (equal (plist-get oauth :scope) "https://mail.google.com/"))))
+      (puthash "ada" "pw" lispm-mail--passwords)
+      (should (equal (plist-get (lispm-mail-server lispm-mail-test-account 'imap) :password) "pw")))))
+
+(ert-deftest lispm-mail-test-xoauth2 ()
+  "SASL XOAUTH2 says the user and the token, base64-encoded."
+  (should (equal (base64-decode-string (lispm-mail-worker-xoauth2 "ada@outlook.com" "T0K"))
+                 "user=ada@outlook.com\1auth=Bearer T0K\1\1")))
+
+(ert-deftest lispm-mail-test-token-answers ()
+  "A token endpoint's answer gives the tokens, or says in words why not."
+  (let ((buffer (lispm-mail-test-http-response
+                 "200 OK" "{\"access_token\":\"A\",\"refresh_token\":\"R\",\"expires_in\":3599}")))
+    (unwind-protect
+        (should (equal (lispm-mail-worker-token-answer buffer)
+                       '(:access-token "A" :refresh-token "R" :expires-in 3599)))
+      (kill-buffer buffer)))
+  (dolist (case '(("{\"error\":\"invalid_grant\",\"error_description\":\"AADSTS70000: gone\"}"
+                   . "no longer signed in")
+                  ("{\"error\":\"invalid_client\",\"error_description\":\"AADSTS7000218: The request body must contain client_assertion. Trace ID: 1 Correlation ID: 2\"}"
+                   . "\\`AADSTS7000218: The request body must contain client_assertion\\.\\'")
+                  ("not JSON" . "did not answer")))
+    (let ((buffer (lispm-mail-test-http-response "400 Bad Request" (car case))))
+      (unwind-protect
+          (should (string-match-p (cdr case)
+                                  (cadr (should-error (lispm-mail-worker-token-answer buffer)))))
+        (kill-buffer buffer)))))
+
+(ert-deftest lispm-mail-test-access-token-refreshed ()
+  "The background Emacs gets an access token with the refresh token, keeps
+it until it expires, and says the new refresh token given with it."
+  (let ((lispm-mail-worker--token nil)
+        (asked nil)
+        (said nil)
+        (oauth '(:token-url "https://login.example.com/token" :client-id "client"
+                 :scope "mail offline_access" :refresh-token "R1")))
+    (cl-letf (((symbol-function 'url-retrieve-synchronously)
+               (lambda (url &rest _)
+                 (push (cons url url-request-data) asked)
+                 (lispm-mail-test-http-response
+                  "200 OK" (format "{\"access_token\":\"A%d\",\"refresh_token\":\"R%d\",\"expires_in\":3600}"
+                                   (length asked) (1+ (length asked))))))
+              ((symbol-function 'lispm-mail-worker--say) (lambda (form) (push form said))))
+      (should (equal (lispm-mail-worker-access-token oauth) "A1"))
+      (should (equal (lispm-mail-worker-access-token oauth) "A1"))
+      (should (= (length asked) 1))
+      (should (equal (caar asked) "https://login.example.com/token"))
+      (should (string-match-p "grant_type=refresh_token" (cdar asked)))
+      (should (string-match-p "refresh_token=R1" (cdar asked)))
+      (should-not (string-match-p "client_secret" (cdar asked)))
+      (should (equal said '((nil refresh-token "R2"))))
+      ;; Expired, it is got again, with the newer refresh token.
+      (setf (nth 1 lispm-mail-worker--token) (float-time))
+      (should (equal (lispm-mail-worker-access-token oauth) "A2"))
+      (should (string-match-p "refresh_token=R2" (cdar asked)))
+      ;; One given is used as it is.
+      (should (equal (lispm-mail-worker-access-token (plist-put (copy-sequence oauth) :access-token "G"))
+                     "G"))
+      ;; A secret given goes with the request.
+      (setq lispm-mail-worker--token nil)
+      (lispm-mail-worker-access-token (plist-put (copy-sequence oauth) :client-secret "S"))
+      (should (string-match-p "client_secret=S" (cdar asked))))))
+
+(defun lispm-mail-test-ask (port request)
+  "Send REQUEST to PORT on the loopback, as a browser, and return the answer."
+  (let* ((buffer (generate-new-buffer " *lispm-mail-test browser*"))
+         (process (make-network-process :name "lispm-mail-test browser" :buffer buffer
+                                        :host "127.0.0.1" :service port :coding 'binary)))
+    (unwind-protect
+        (progn
+          (process-send-string process request)
+          (with-timeout (10 (error "No answer"))
+            (while (process-live-p process)
+              (accept-process-output process 0.1)))
+          (with-current-buffer buffer (buffer-string)))
+      (kill-buffer buffer))))
+
+(ert-deftest lispm-mail-test-sign-in-in-browser ()
+  "Signing in opens the provider's page and takes the code it sends back,
+with the state asked for, exchanging it with the PKCE verifier."
+  (let* ((lispm-mail-microsoft-client-id "client")
+         (opened nil)
+         (exchanged nil)
+         (result nil)
+         (lispm-mail-sign-in-browse-function (lambda (url) (setq opened url))))
+    (cl-letf (((symbol-function 'lispm-mail-sign-in--exchange)
+               (lambda (kind fields callback)
+                 (setq exchanged (cons kind fields))
+                 (funcall callback '(:access-token "A" :refresh-token "R" :expires-in 3600) nil))))
+      (lispm-mail-sign-in 'microsoft "ada@outlook.com"
+                          (lambda (value error) (setq result (list value error))))
+      (let* ((query (url-parse-query-string (cadr (split-string opened "?"))))
+             (said (lambda (name) (cadr (assoc name query))))
+             (port (and (string-match ":\\([0-9]+\\)\\'" (funcall said "redirect_uri"))
+                        (string-to-number (match-string 1 (funcall said "redirect_uri"))))))
+        (should (string-prefix-p "https://login.microsoftonline.com/common/oauth2/v2.0/authorize?" opened))
+        (should (equal (funcall said "client_id") "client"))
+        (should (equal (funcall said "login_hint") "ada@outlook.com"))
+        (should (equal (funcall said "code_challenge_method") "S256"))
+        (should (equal (funcall said "response_mode") "query"))
+        (should (string-match-p "offline_access" (funcall said "scope")))
+        ;; A page the sign-in did not ask for is turned away.
+        (should (string-match-p "\\`HTTP/1.1 400"
+                                (lispm-mail-test-ask port "GET /?code=X&state=other HTTP/1.1\r\n\r\n")))
+        (should (string-match-p "\\`HTTP/1.1 404"
+                                (lispm-mail-test-ask port "GET /favicon.ico HTTP/1.1\r\n\r\n")))
+        (should-not result)
+        (let ((page (lispm-mail-test-ask
+                     port (format "GET /?code=C0DE&state=%s HTTP/1.1\r\nHost: localhost\r\n\r\n"
+                                  (funcall said "state")))))
+          (should (string-match-p "\\`HTTP/1.1 200" page))
+          (should (string-match-p "Signed in" page)))
+        (should (equal result '((:access-token "A" :refresh-token "R" :expires-in 3600) nil)))
+        (let ((fields (cdr exchanged)))
+          (should (eq (car exchanged) 'microsoft))
+          (should (equal (cadr (assoc "code" fields)) "C0DE"))
+          (should (equal (cadr (assoc "redirect_uri" fields)) (funcall said "redirect_uri")))
+          (should-not (cadr (assoc "client_secret" fields)))
+          (should (equal (lispm-mail-sign-in-challenge (cadr (assoc "code_verifier" fields)))
+                         (funcall said "code_challenge"))))
+        ;; Done, nothing listens any more.
+        (should-not (seq-find (lambda (process)
+                                (and (equal (process-name process) "lispm-mail sign-in")
+                                     (process-live-p process)))
+                              (process-list)))))))
+
+(ert-deftest lispm-mail-test-sign-in-google ()
+  "Google's page is asked for a token to ask again with, at each sign-in,
+and the code is exchanged with the client's secret."
+  (let* ((lispm-mail-google-client-id "gclient")
+         (lispm-mail-google-client-secret "gsecret")
+         (opened nil)
+         (exchanged nil)
+         (lispm-mail-sign-in-browse-function (lambda (url) (setq opened url))))
+    (cl-letf (((symbol-function 'lispm-mail-sign-in--exchange)
+               (lambda (kind fields callback)
+                 (setq exchanged (cons kind fields))
+                 (funcall callback '(:access-token "A" :refresh-token "R" :expires-in 3600) nil))))
+      (lispm-mail-sign-in 'google "ada@gmail.com" #'ignore)
+      (let* ((query (url-parse-query-string (cadr (split-string opened "?"))))
+             (said (lambda (name) (cadr (assoc name query))))
+             (redirect (funcall said "redirect_uri")))
+        (should (string-prefix-p "https://accounts.google.com/o/oauth2/v2/auth?" opened))
+        (should (string-match-p "\\`http://127\\.0\\.0\\.1:[0-9]+\\'" redirect))
+        (should (equal (funcall said "scope") "https://mail.google.com/"))
+        (should (equal (funcall said "access_type") "offline"))
+        (should (equal (funcall said "prompt") "consent"))
+        (should-not (funcall said "response_mode"))
+        (should-not (funcall said "client_secret"))
+        (lispm-mail-test-ask (string-to-number (car (last (split-string redirect ":"))))
+                             (format "GET /?code=C0DE&state=%s HTTP/1.1\r\n\r\n" (funcall said "state")))
+        (should (eq (car exchanged) 'google))
+        (should (equal (cadr (assoc "client_secret" (cdr exchanged))) "gsecret"))))))
+
+(ert-deftest lispm-mail-test-packaged-secret ()
+  "The secret LispM Mail is packaged with goes with its own client ID
+only, and one set takes its place."
+  (let* ((file (make-temp-file "lispm-mail-secrets" nil ".eld"
+                               "((google :client-id \"gclient\" :client-secret \"packaged\"))\n"))
+         (lispm-mail-secrets-file file)
+         (lispm-mail-google-client-id "gclient")
+         (lispm-mail-google-client-secret nil))
+    (unwind-protect
+        (progn
+          (should (equal (lispm-mail-sign-in-client-secret 'google) "packaged"))
+          (should (equal (plist-get (lispm-mail-sign-in-oauth 'google "R") :client-secret) "packaged"))
+          (let ((lispm-mail-google-client-secret "own"))
+            (should (equal (lispm-mail-sign-in-client-secret 'google) "own")))
+          (let ((lispm-mail-google-client-id "other"))
+            (should-not (lispm-mail-sign-in-client-secret 'google)))
+          (should-not (lispm-mail-sign-in-client-secret 'microsoft))
+          (with-temp-file file (insert "((google"))
+          (should-not (lispm-mail-sign-in-client-secret 'google))
+          (delete-file file)
+          (should-not (lispm-mail-sign-in-client-secret 'google)))
+      (when (file-exists-p file) (delete-file file)))))
+
+(ert-deftest lispm-mail-test-sign-in-without-secret ()
+  "Without the secret its provider asks for, the sign-in says so before
+the browser opens."
+  (let* ((lispm-mail-google-client-id "gclient")
+         (lispm-mail-google-client-secret nil)
+         (lispm-mail-secrets-file (expand-file-name "none.eld" temporary-file-directory))
+         (opened nil)
+         (lispm-mail-sign-in-browse-function (lambda (url) (setq opened url))))
+    (should (string-match-p "App Store"
+                            (cadr (should-error (lispm-mail-sign-in 'google "ada@gmail.com" #'ignore)
+                                                :type 'user-error))))
+    (should-not opened)))
+
+(ert-deftest lispm-mail-test-sign-in-refused ()
+  "Refused on the provider's page, the sign-in says so."
+  (let* ((lispm-mail-microsoft-client-id "client")
+         (opened nil)
+         (result nil)
+         (lispm-mail-sign-in-browse-function (lambda (url) (setq opened url))))
+    (lispm-mail-sign-in 'microsoft "ada@outlook.com" (lambda (value error) (setq result (list value error))))
+    (let* ((query (url-parse-query-string (cadr (split-string opened "?"))))
+           (redirect (cadr (assoc "redirect_uri" query)))
+           (port (string-to-number (car (last (split-string redirect ":"))))))
+      (lispm-mail-test-ask port (format "GET /?error=access_denied&error_description=No+thanks&state=%s HTTP/1.1\r\n\r\n"
+                                        (cadr (assoc "state" query))))
+      (should (equal result '(nil "The sign-in was cancelled"))))
+    (let ((lispm-mail-microsoft-client-id nil))
+      (should-error (lispm-mail-sign-in 'microsoft "ada@outlook.com" #'ignore) :type 'user-error))))
+
+(ert-deftest lispm-mail-test-sign-in-form ()
+  "An Outlook.com or Gmail account's form signs in instead of asking for a
+password, and keeps the token got."
+  (lispm-mail-test-with-home
+    (let ((lispm-mail-microsoft-client-id "client")
+          (lispm-mail-google-client-id "gclient")
+          (kept nil))
+      (cl-letf (((symbol-function 'lispm-mail-set-password)
+                 (lambda (account secret) (push (cons (plist-get account :id) secret) kept)))
+                ((symbol-function 'lispm-mail-save-accounts)
+                 (lambda (accounts) (setq lispm-mail-accounts accounts)))
+                ((symbol-function 'lispm-mail-check) #'ignore)
+                ((symbol-function 'lispm-mail) #'ignore))
+        (with-current-buffer (lispm-mail-add-account)
+          (unwind-protect
+              (progn
+                (lispm-mail-account--set :address "ada@gmail.com")
+                (lispm-mail-account--fill (lispm-mail-provider-settings "ada@gmail.com"))
+                (should (string-match-p "Sign In with Google…" (buffer-string)))
+                (should-not (string-match-p "^ *Password" (buffer-string)))
+                (should-not (string-match-p "[Aa]pp password" (buffer-string)))
+                (lispm-mail-account--set :address "ada@icloud.com")
+                (lispm-mail-account--fill (lispm-mail-provider-settings "ada@icloud.com"))
+                (should (string-match-p "^ *Password" (buffer-string)))
+                (lispm-mail-account--set :address "ada@hotmail.com")
+                (lispm-mail-account--fill (lispm-mail-provider-settings "ada@hotmail.com"))
+                (should (string-match-p "Sign In with Microsoft…" (buffer-string)))
+                (should-not (string-match-p "^ *Password" (buffer-string)))
+                (should (equal (lispm-mail-account--problem) "Sign in with Microsoft first"))
+                (setq lispm-mail-account--token '(:access-token "A" :refresh-token "R"))
+                (lispm-mail-account--redraw)
+                (should (string-match-p "Signed in with Microsoft" (buffer-string)))
+                (should (equal (plist-get (plist-get (lispm-mail-account--credentials) :oauth)
+                                          :access-token)
+                               "A"))
+                (lispm-mail-account-save))
+            (when (buffer-live-p (current-buffer)) (kill-buffer (current-buffer)))))
+        (should (equal kept '(("ada" . "R"))))
+        (should (eq (plist-get (car lispm-mail-accounts) :sign-in) 'microsoft))
+        (should (equal (plist-get (plist-get (car lispm-mail-accounts) :imap) :host)
+                       "outlook.office365.com"))))))
+
 ;;;; Mailboxes and messages
 
 (ert-deftest lispm-mail-test-roles ()

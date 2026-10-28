@@ -16,9 +16,9 @@ prefix is ~lispm-mail-~.
 
 * What it needs
 
-- *A mail account* whose server speaks IMAP and SMTP: Gmail, iCloud, Yahoo, Fastmail, QQ Mail,
-  NetEase, Zoho, GMX, or a server of your own.  Providers that sign in only through their own
-  pages, as Outlook.com may, and Proton Mail without its Bridge, cannot be reached with a password.
+- *A mail account* whose server speaks IMAP and SMTP: Gmail, Outlook.com and Hotmail, iCloud,
+  Yahoo, Fastmail, QQ Mail, NetEase, Zoho, GMX, or a server of your own.  Proton Mail is read
+  through its Bridge.
 - *lispm-kit*, [[https://github.com/LispMachineLab/lispm-kit][LispM Kit]], with which each window declares its commands once: their keys, their
   menu items and, for the main ones, the words of a button.  The App Store installs it first.
 
@@ -29,13 +29,28 @@ Nothing else: the rest is Emacs.
 =M-x lispm-mail= opens the window; with no account yet, it offers to add one.  The form asks
 for a name, an address and a password, and fills the servers in from the address: those of the
 providers most people have are known, others are asked of Thunderbird's database of providers,
-and any can be typed.  Under the servers, what the provider asks for is said, as Gmail's and
-iCloud's app passwords.  *Test Connection* logs in to both servers and says how it went; *Save*
-keeps the account.
+and any can be typed.  Under the password, what the provider asks for is said.  *Test
+Connection* logs in to both servers and says how it went; *Save* keeps the account.
 
-The password is kept in the macOS Keychain, given to its =security= program on its input, never
-on its command line; elsewhere, with auth-source, in the first of your ~auth-sources~.  Nothing
-else of an account is secret: it is kept with Customize, in ~lispm-mail-accounts~.
+Gmail and Google Workspace sign in on Google's own page, and Outlook.com, Hotmail, Live and MSN
+on Microsoft's: their form has *Sign In with Google…* or *Sign In with Microsoft…* where the
+others have a password.  It opens the page in your browser, where you are likely signed in
+already; there you let LispM Mail read and send the account's mail, and the browser comes back
+to LispM Mail, on a port of this computer only, with a code.  LispM Mail exchanges it for a
+token, which logs in to the servers for an hour, and another, with which it gets the next; it
+never sees the password.  This is OAuth 2.0 as a program on a computer does it, with PKCE, the
+servers logged in to by SASL XOAUTH2.
+
+Google asks such a program for the secret of its client ID too.  LispM Mail's is kept out of
+its source: each release comes with it in =lispm-mail-secrets.eld=, written from the
+repository's secrets, and the App Store puts that file beside LispM Mail.  Run from a checkout,
+LispM Mail has none, and Gmail's sign-in says so; ~lispm-mail-google-client-secret~ takes the
+secret of a client ID of one's own.
+
+The password, or the token signing an account in, is kept in the macOS Keychain, given to its
+=security= program on its input, never on its command line; elsewhere, with auth-source, in the
+first of your ~auth-sources~.  Nothing else of an account is secret: it is kept with Customize,
+in ~lispm-mail-accounts~.
 
 * Reading
 
@@ -114,9 +129,16 @@ shown at once when it is opened again, and each message read, opened again witho
 
 =make test compile= runs the tests and byte-compiles the files, warnings as errors.  No test
 speaks to a mail server: what the background Emacs does is tested on what imap.el would have
-parsed, one test starts a background Emacs to check a server that is not there, and
-[[file:test/report.eml][test/report.eml]] is a message with text, HTML and an attachment.  LispM Kit is a checkout beside
-this one, or named by ~LISPM_KIT~.
+parsed, one test starts a background Emacs to check a server that is not there, signing in is
+tested with a browser played on the loopback, and [[file:test/report.eml][test/report.eml]] is a message with text, HTML
+and an attachment.  LispM Kit is a checkout beside this one, or named by ~LISPM_KIT~.
+
+* Releases
+
+A release published on GitHub runs the =release= workflow: =make secrets= writes
+=lispm-mail-secrets.eld= from the repository's secret ~GOOGLE_CLIENT_SECRET~, and the file is
+attached to the release, its SHA-256 in the run's summary for the App Store's catalog to pin.
+A new secret comes with a new release.
 
 * License
 

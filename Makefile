@@ -4,10 +4,10 @@ EMACS ?= emacs
 LISPM_KIT ?= ../lispm-kit
 LOAD_PATH = -L . -L $(LISPM_KIT)
 
-FILES = lispm-mail-worker.el lispm-mail-style.el lispm-mail-accounts.el lispm-mail-data.el lispm-mail-view.el \
+FILES = lispm-mail-worker.el lispm-mail-style.el lispm-mail-accounts.el lispm-mail-data.el lispm-mail-sign-in.el lispm-mail-view.el \
 	lispm-mail-compose.el lispm-mail-settings.el lispm-mail.el
 
-.PHONY: test compile
+.PHONY: test compile secrets
 
 test:
 	$(EMACS) -Q --batch $(LOAD_PATH) --eval '(setq native-comp-enable-subr-trampolines nil)' \
@@ -19,3 +19,15 @@ compile:
 	$(EMACS) -Q --batch $(LOAD_PATH) --eval '(setq byte-compile-error-on-warn t)' \
 	  -f batch-byte-compile $(FILES); \
 	status=$$?; rm -f *.elc; exit $$status
+
+# The file of secrets a release comes with, `lispm-mail-secrets-file',
+# from the environment: GOOGLE_CLIENT_SECRET, the secret of
+# `lispm-mail-google-client-id'.  It is never committed.
+secrets:
+	$(EMACS) -Q --batch -L . -l lispm-mail-accounts \
+	  --eval '(let ((secret (string-trim (or (getenv "GOOGLE_CLIENT_SECRET") "")))) \
+	            (when (string-empty-p secret) (error "GOOGLE_CLIENT_SECRET is not set")) \
+	            (with-temp-file lispm-mail-secrets-file \
+	              (prin1 `((google :client-id ,lispm-mail-google-client-id :client-secret ,secret)) \
+	                     (current-buffer)) \
+	              (insert "\n")))'

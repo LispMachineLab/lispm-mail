@@ -143,6 +143,8 @@ taking them out of it."
       (dolist (answer (lispm-mail-parse-answers (process-buffer process)))
         (pcase-let ((`(,id ,result ,value) answer)
                     (busy (lispm-mail--worker-busy worker)))
+          (when (and (null id) (eq result 'refresh-token) (stringp value))
+            (lispm-mail--keep-refresh-token worker value))
           (when (and busy (eql id (car busy)))
             (setf (lispm-mail--worker-busy worker) nil)
             (condition-case err
@@ -177,6 +179,14 @@ taking them out of it."
     (dolist (entry queue)
       (ignore-errors (funcall (nth 4 entry) nil error)))))
 
+(defun lispm-mail--keep-refresh-token (worker token)
+  "Keep TOKEN, the refresh token WORKER's provider gave, as its account's."
+  (when-let* ((account (lispm-mail-account (lispm-mail--worker-id worker))))
+    (condition-case err
+        (lispm-mail-set-password account token)
+      (error (message "LispM Mail: the new sign-in of %s could not be kept: %s"
+                      (lispm-mail-account-title account) (error-message-string err))))))
+
 (defun lispm-mail--start (worker)
   "Start WORKER's Emacs, its first request to log in to the account's server."
   (let* ((id (lispm-mail--worker-id worker))
@@ -185,7 +195,10 @@ taking them out of it."
     (cond
      ((null account)
       (lispm-mail--fail-queue worker "No such account"))
-     ((null (plist-get server :password))
+     ((and (plist-get account :sign-in) (not (plist-get server :oauth)))
+      (lispm-mail--set-state worker 'offline "This account is not signed in")
+      (lispm-mail--fail-queue worker "This account is not signed in: open Settings"))
+     ((and (not (plist-get account :sign-in)) (null (plist-get server :password)))
       (lispm-mail--set-state worker 'offline "No password is kept for this account")
       (lispm-mail--fail-queue worker "No password is kept for this account: open Settings"))
      (t
@@ -264,9 +277,9 @@ wrong.  See lispm-mail-worker.el for the operations."
            lispm-mail--workers))
 
 (defun lispm-mail-check-servers (imap smtp callback)
-  "Connect to IMAP and SMTP, servers with their passwords, and log in to
-each, in an Emacs of its own.  Call CALLBACK with (:imap RESULT :smtp
-RESULT), RESULT t or what went wrong."
+  "Connect to IMAP and SMTP, servers with their passwords or :oauth, and
+log in to each, in an Emacs of its own.  Call CALLBACK with (:imap
+RESULT :smtp RESULT), RESULT t or what went wrong."
   (let* ((buffer (generate-new-buffer " *lispm-mail check*"))
          (done nil)
          (process
@@ -283,7 +296,8 @@ RESULT), RESULT t or what went wrong."
                        (with-current-buffer (process-buffer process)
                          (goto-char (point-max))
                          (insert output))
-                       (when-let* ((answer (car (lispm-mail-parse-answers (process-buffer process)))))
+                       ;; Its answer, not what it says unasked.
+                       (when-let* ((answer (assq 1 (lispm-mail-parse-answers (process-buffer process)))))
                          (setq done t)
                          (delete-process process)
                          (kill-buffer buffer)
