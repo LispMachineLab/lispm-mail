@@ -195,7 +195,9 @@ and the App Store puts it beside LispM Mail.")
      :redirect "http://127.0.0.1:%d"
      ;; A token to ask again with, given at each sign-in, not the first only.
      :parameters (("access_type" "offline") ("prompt" "consent"))
-     :hosts ("imap.gmail.com")))
+     :hosts ("imap.gmail.com")
+     :send "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media"
+     :send-check "https://gmail.googleapis.com/gmail/v1/users/me/profile"))
   "The providers whose own page signs accounts in: (KIND . PROPERTIES).
 :name says whose page it is; :authorize and :token are its OAuth 2.0
 endpoints; :scope what is asked for, the account's mail to read and
@@ -204,7 +206,10 @@ LispM Mail there, and :client-secret the one giving the secret that
 comes with it, if the provider asks for one; :redirect where the
 browser comes back to, %d the port; :parameters more the page is
 asked with, ((NAME VALUE) ...); :hosts the IMAP servers whose
-accounts sign in so.")
+accounts sign in so.  :send, when the provider has it, is where its
+API takes a message to send, over HTTPS, as Gmail's does: mail goes
+there, not to the SMTP server, which networks stop more often;
+:send-check is where to ask, signed in, to know that it would.")
 
 (defun lispm-mail-sign-in-name (kind)
   "Return whose page signs KIND's accounts in, as \"Microsoft\"."
@@ -240,15 +245,18 @@ one set, or the one LispM Mail is packaged with, or nil."
 
 (defun lispm-mail-sign-in-oauth (kind refresh-token &optional access-token)
   "Return what logs in to a server of an account signing in with KIND:
-the :oauth plist of `lispm-mail-server', its REFRESH-TOKEN kept, and
-an ACCESS-TOKEN when one was got just now."
+the :oauth plist of `lispm-mail-server', its REFRESH-TOKEN kept, an
+ACCESS-TOKEN when one was got just now, and the provider's :send and
+:send-check as :send-url and :send-check-url."
   (let ((provider (alist-get kind lispm-mail-sign-ins)))
     (list :token-url (plist-get provider :token)
           :client-id (lispm-mail-sign-in-client-id kind)
           :client-secret (lispm-mail-sign-in-client-secret kind)
           :scope (plist-get provider :scope)
           :refresh-token refresh-token
-          :access-token access-token)))
+          :access-token access-token
+          :send-url (plist-get provider :send)
+          :send-check-url (plist-get provider :send-check))))
 
 (defconst lispm-mail-providers
   '(("Gmail" ("gmail.com" "googlemail.com")
