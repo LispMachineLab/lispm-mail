@@ -22,12 +22,14 @@ compile:
 
 # The file of secrets a release comes with, `lispm-mail-secrets-file',
 # from the environment: GOOGLE_CLIENT_SECRET, the secret of
-# `lispm-mail-google-client-id'.  It is never committed.
+# `lispm-mail-google-client-id'.  It is never committed.  The form is a
+# variable: a recipe would hand its line ends, quoted, to the shell.
+SECRETS = (let ((secret (string-trim (or (getenv "GOOGLE_CLIENT_SECRET") "")))) \
+	    (when (string-empty-p secret) (error "GOOGLE_CLIENT_SECRET is not set")) \
+	    (with-temp-file lispm-mail-secrets-file \
+	      (prin1 `((google :client-id ,lispm-mail-google-client-id :client-secret ,secret)) \
+	             (current-buffer)) \
+	      (insert "\n")))
+
 secrets:
-	$(EMACS) -Q --batch -L . -l lispm-mail-accounts \
-	  --eval '(let ((secret (string-trim (or (getenv "GOOGLE_CLIENT_SECRET") "")))) \
-	            (when (string-empty-p secret) (error "GOOGLE_CLIENT_SECRET is not set")) \
-	            (with-temp-file lispm-mail-secrets-file \
-	              (prin1 `((google :client-id ,lispm-mail-google-client-id :client-secret ,secret)) \
-	                     (current-buffer)) \
-	              (insert "\n")))'
+	$(EMACS) -Q --batch -L . -l lispm-mail-accounts --eval '$(SECRETS)'
