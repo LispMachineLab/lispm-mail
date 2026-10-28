@@ -101,7 +101,8 @@ quotes, unless the settings say below.
 Mail goes in the background: the window closes at once.  A message that could not go stays in
 the Outbox, at the top of the mailboxes, with what went wrong, to be sent again.  A copy of each
 message sent is kept in the account's Sent mailbox, unless its server keeps one itself, as
-Gmail's does.
+Gmail's does.  A Gmail account signed in with Google sends through Gmail's API, over HTTPS, not
+its SMTP server, whose ports many networks and proxies stop; *Test Connection* asks the API.
 
 * Settings
 
@@ -139,7 +140,7 @@ agents these as tools.
 
 Each account has an Emacs of its own in the background, in batch, which loads
 [[file:lispm-mail-worker.el][lispm-mail-worker.el]] and nothing else: imap.el keeps a connection to the account's server, and
-smtpmail sends.  The Emacs mail is read in asks it for what it needs, the most pressing first, a
+smtpmail sends, or url.el, through Gmail's API.  The Emacs mail is read in asks it for what it needs, the most pressing first, a
 message to read before the first words of others, and never waits for the network.  What is
 fetched is kept in ~lispm-mail-directory~, readable by you alone: each mailbox's latest messages,
 shown at once when it is opened again, and each message read, opened again without the network.

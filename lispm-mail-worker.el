@@ -79,7 +79,10 @@
 ;;              deleted for good, as a draft once sent.
 ;;   send       :smtp (:host :port :security :user :password) :file
 ;;              :separator, the line ending the headers, and :sent, a
-;;              mailbox to append a copy to, or nil.
+;;              mailbox to append a copy to, or nil.  An :smtp signing
+;;              in whose :oauth has a :send-url, as Gmail's, sends
+;;              through that HTTPS endpoint of its provider's API
+;;              instead; :send-check-url checks it.
 ;;   check      :imap and :smtp, servers as `imap' and `send' take them:
 ;;              each connected to and logged in to, in an Emacs of its
 ;;              own, the settings' test.  Answers (:imap RESULT :smtp
@@ -755,17 +758,40 @@ connection: only them, when the server can, else all marked."
     (_ 'plain)))
 
 (defun lispm-mail-worker--send (properties)
-  "Send the message of PROPERTIES' :file through their :smtp server."
+  "Send the message of PROPERTIES' :file through their :smtp server, or
+its provider's API, when its :oauth names where."
   (let* ((smtp (plist-get properties :smtp))
-         (user (plist-get smtp :user))
+         (oauth (plist-get smtp :oauth))
+         (file (plist-get properties :file)))
+    (if (plist-get oauth :send-url)
+        (lispm-mail-worker--send-https oauth file (plist-get properties :separator))
+      (lispm-mail-worker--send-smtp smtp file (plist-get properties :separator)))
+    (when-let* ((sent (plist-get properties :sent)))
+      (let ((copy (make-temp-file "lispm-mail-sent" nil ".eml")))
+        (unwind-protect
+            (progn
+              (with-temp-file copy
+                (set-buffer-multibyte nil)
+                (let ((coding-system-for-read 'binary))
+                  (insert-file-contents file))
+                (goto-char (point-min))
+                (when (re-search-forward (concat "^" (regexp-quote (plist-get properties :separator)) "\n")
+                                         nil t)
+                  (replace-match "\n" t t)))
+              (lispm-mail-worker--append (list :mailbox sent :file copy :flags '("\\Seen"))))
+          (delete-file copy))))
+    t))
+
+(defun lispm-mail-worker--send-smtp (smtp file separator)
+  "Send the message of FILE, its headers ended by SEPARATOR, through SMTP."
+  (let* ((user (plist-get smtp :user))
          (oauth (plist-get smtp :oauth))
          ;; Signing in, the access token is given as the password.
-         (password (if oauth (lispm-mail-worker-access-token oauth) (plist-get smtp :password)))
-         (file (plist-get properties :file)))
+         (password (if oauth (lispm-mail-worker-access-token oauth) (plist-get smtp :password))))
     (with-temp-buffer
       (let ((coding-system-for-read 'raw-text))
         (insert-file-contents file))
-      (let ((mail-header-separator (plist-get properties :separator))
+      (let ((mail-header-separator separator)
             (smtpmail-smtp-server (plist-get smtp :host))
             (smtpmail-smtp-service (plist-get smtp :port))
             (smtpmail-stream-type (lispm-mail-worker--smtp-type (plist-get smtp :security)))
@@ -781,21 +807,90 @@ connection: only them, when the server can, else all marked."
                      (and user password
                           (list (list :host smtpmail-smtp-server :port smtpmail-smtp-service
                                       :user user :secret password))))))
-          (smtpmail-send-it))))
-    (when-let* ((sent (plist-get properties :sent)))
-      (let ((copy (make-temp-file "lispm-mail-sent" nil ".eml")))
-        (unwind-protect
-            (progn
-              (with-temp-file copy
-                (set-buffer-multibyte nil)
-                (let ((coding-system-for-read 'binary))
-                  (insert-file-contents file))
-                (goto-char (point-min))
-                (when (re-search-forward (concat "^" (regexp-quote (plist-get properties :separator)) "\n")
-                                         nil t)
-                  (replace-match "\n" t t)))
-              (lispm-mail-worker--append (list :mailbox sent :file copy :flags '("\\Seen"))))
-          (delete-file copy))))
+          (smtpmail-send-it))))))
+
+(defun lispm-mail-worker-message-bytes (file separator)
+  "Return the message of FILE, its headers ended by SEPARATOR, as it goes
+to a provider's API: the separator a blank line, each line ended in
+CRLF.  Its Bcc stays: the provider sends to it, and takes it out."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (let ((coding-system-for-read 'binary))
+      (insert-file-contents file))
+    (goto-char (point-min))
+    (when (re-search-forward (concat "^" (regexp-quote separator) "\n") nil t)
+      (replace-match "\n" t t))
+    (goto-char (point-min))
+    (while (search-forward "\n" nil t)
+      (unless (eq (char-before (1- (point))) ?\r)
+        (replace-match "\r\n" t t)))
+    (buffer-string)))
+
+(defun lispm-mail-worker-http-answer (buffer)
+  "Return what BUFFER, an HTTP response, says: (STATUS . ANSWER), STATUS
+its code, ANSWER its body read as JSON, an alist, or nil."
+  (with-current-buffer buffer
+    (goto-char (point-min))
+    (cons (and (looking-at "HTTP/[0-9.]+ \\([0-9]+\\)") (string-to-number (match-string 1)))
+          (and (re-search-forward "\r?\n\r?\n" nil t)
+               (ignore-errors
+                 (json-parse-string
+                  (decode-coding-string (buffer-substring-no-properties (point) (point-max)) 'utf-8)
+                  :object-type 'alist :null-object nil))))))
+
+(defun lispm-mail-worker--api (oauth url &optional message)
+  "Ask the provider's API at URL, signed in with OAUTH: POST MESSAGE, a
+message's bytes, or GET without.  Return its ANSWER, read as JSON, an
+alist.  An access token refused is got anew, once: it was taken back
+before it expired.  Signal an error saying why when the API refuses."
+  (let ((again t)
+        answer)
+    (while again
+      (let* ((url-request-method (if message "POST" "GET"))
+             (url-request-extra-headers
+              `(("Authorization" . ,(concat "Bearer " (lispm-mail-worker-access-token oauth)))
+                ,@(and message '(("Content-Type" . "message/rfc822")))))
+             (url-request-data message)
+             (buffer (url-retrieve-synchronously url t t 300))
+             (said (if buffer
+                       (unwind-protect (lispm-mail-worker-http-answer buffer)
+                         (kill-buffer buffer))
+                     (error "%s did not answer" (url-host (url-generic-parse-url url))))))
+        (cond ((and (car said) (<= 200 (car said) 299))
+               (setq answer (cdr said) again nil))
+              ((and (eql (car said) 401) (eq again t))
+               ;; Got anew, once: the one given, or kept, no longer.
+               (setq oauth (plist-put (copy-sequence oauth) :access-token nil)
+                     lispm-mail-worker--token (and lispm-mail-worker--token
+                                                   (list nil 0 (nth 2 lispm-mail-worker--token)))
+                     again 'once))
+              (t
+               (error "%s" (lispm-mail-worker--api-error said))))))
+    answer))
+
+(defun lispm-mail-worker--api-error (said)
+  "Return what SAID, (STATUS . ANSWER) of a provider's API refusing, says."
+  (pcase-let* ((`(,status . ,answer) said)
+               (text (alist-get 'message (alist-get 'error answer))))
+    (cond ((eql status 401) "The account is no longer signed in: sign in again in its settings")
+          ((stringp text) (format "The server refused: %s" text))
+          (status (format "The server refused (HTTP %d)" status))
+          (t "The server's answer could not be read"))))
+
+(defun lispm-mail-worker--send-https (oauth file separator)
+  "Send the message of FILE, its headers ended by SEPARATOR, through the
+API of OAUTH's provider, at its :send-url; return the message's ID there."
+  (or (alist-get 'id (lispm-mail-worker--api oauth (plist-get oauth :send-url)
+                                             (lispm-mail-worker-message-bytes file separator)))
+      t))
+
+(defun lispm-mail-worker-check-https (server)
+  "Ask the API SERVER's :oauth sends through whether it would, signed in.
+Return t, or signal an error saying what went wrong."
+  (let ((oauth (plist-get server :oauth)))
+    (unless oauth
+      (error "The account is not signed in: sign in in its settings"))
+    (lispm-mail-worker--api oauth (plist-get oauth :send-check-url))
     t))
 
 ;;;; Checking a server
@@ -917,7 +1012,9 @@ Return t, or signal an error saying what went wrong."
                   (error (lispm-mail-worker-reason err))))
         :smtp (when-let* ((smtp (plist-get properties :smtp)))
                 (condition-case err
-                    (lispm-mail-worker-check-smtp smtp)
+                    (if (plist-get (plist-get smtp :oauth) :send-url)
+                        (lispm-mail-worker-check-https smtp)
+                      (lispm-mail-worker-check-smtp smtp))
                   (error (lispm-mail-worker-reason err))))))
 
 (defun lispm-mail-worker--parse-body (parse)

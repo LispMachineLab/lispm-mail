@@ -330,6 +330,86 @@ it until it expires, and says the new refresh token given with it."
       (lispm-mail-worker-access-token (plist-put (copy-sequence oauth) :client-secret "S"))
       (should (string-match-p "client_secret=S" (cdar asked))))))
 
+(ert-deftest lispm-mail-test-message-bytes ()
+  "A message goes to a provider's API with a blank line ending its
+headers, its lines ended in CRLF, its Bcc kept for the provider."
+  (let ((file (make-temp-file "lispm-mail-test" nil ".eml"
+                              "To: grace@navy.mil\nBcc: alan@bletchley.uk\nSubject: Lunch\n--text follows this line--\nHello\r\nAda\n")))
+    (unwind-protect
+        (should (equal (lispm-mail-worker-message-bytes file "--text follows this line--")
+                       "To: grace@navy.mil\r\nBcc: alan@bletchley.uk\r\nSubject: Lunch\r\n\r\nHello\r\nAda\r\n"))
+      (delete-file file))))
+
+(ert-deftest lispm-mail-test-send-through-api ()
+  "An account whose provider's API sends mail, as Gmail's, sends there and
+never to its SMTP server: the message POSTed with an access token, got
+anew once when the one had is refused; what the API says when it
+refuses is said.  Its check asks the API, not the SMTP server."
+  (let* ((lispm-mail-worker--token (list "A1" (+ (float-time) 3600) "R1"))
+         (oauth (list :token-url "https://oauth2.example.com/token" :client-id "client"
+                      :refresh-token "R1"
+                      :send-url "https://mail.example.com/send"
+                      :send-check-url "https://mail.example.com/profile"))
+         (smtp (list :host "smtp.example.com" :port 465 :security 'tls :user "ada@example.com" :oauth oauth))
+         (file (make-temp-file "lispm-mail-test" nil ".eml"
+                               "To: grace@navy.mil\nSubject: Lunch\n--text follows this line--\nHello\n"))
+         (answers nil)
+         (asked nil))
+    (cl-letf (((symbol-function 'url-retrieve-synchronously)
+               (lambda (url &rest _)
+                 (push (list url url-request-method (cdr (assoc "Authorization" url-request-extra-headers))
+                             (cdr (assoc "Content-Type" url-request-extra-headers)) url-request-data)
+                       asked)
+                 (if (equal url "https://oauth2.example.com/token")
+                     (lispm-mail-test-http-response "200 OK" "{\"access_token\":\"A2\",\"expires_in\":3600}")
+                   (apply #'lispm-mail-test-http-response (pop answers)))))
+              ((symbol-function 'smtpmail-send-it) (lambda () (error "Sent to the SMTP server")))
+              ((symbol-function 'lispm-mail-worker-check-smtp) (lambda (_) (error "Checked the SMTP server"))))
+      (unwind-protect
+          (progn
+            ;; The token had is refused: got anew, and the message sent with it.
+            (setq answers '(("401 Unauthorized" "{\"error\":{\"code\":401,\"message\":\"Invalid Credentials\"}}")
+                            ("200 OK" "{\"id\":\"m1\",\"labelIds\":[\"SENT\"]}")))
+            (should (eq (lispm-mail-worker--send (list :smtp smtp :file file :separator "--text follows this line--"))
+                        t))
+            (should (equal (mapcar (lambda (call) (list (nth 0 call) (nth 1 call) (nth 2 call))) (reverse asked))
+                           '(("https://mail.example.com/send" "POST" "Bearer A1")
+                             ("https://oauth2.example.com/token" "POST" nil)
+                             ("https://mail.example.com/send" "POST" "Bearer A2"))))
+            (should (equal (nth 3 (car asked)) "message/rfc822"))
+            (should (equal (nth 4 (car asked)) "To: grace@navy.mil\r\nSubject: Lunch\r\n\r\nHello\r\n"))
+            ;; Refused, it says why; refused twice for the sign-in, that it is gone.
+            (setq answers '(("400 Bad Request" "{\"error\":{\"code\":400,\"message\":\"Invalid To header\"}}")))
+            (should (equal (cadr (should-error (lispm-mail-worker--send
+                                                (list :smtp smtp :file file :separator "--text follows this line--"))))
+                           "The server refused: Invalid To header"))
+            (setq answers '(("401 Unauthorized" "{}") ("401 Unauthorized" "{}")))
+            (should (string-match-p "no longer signed in"
+                                    (cadr (should-error (lispm-mail-worker--send
+                                                         (list :smtp smtp :file file
+                                                               :separator "--text follows this line--"))))))
+            ;; The check asks the API, with a GET.
+            (setq asked nil
+                  answers '(("200 OK" "{\"emailAddress\":\"ada@example.com\"}")))
+            (should (equal (lispm-mail-worker--check (list :smtp smtp)) '(:imap nil :smtp t)))
+            (should (equal (seq-take (car asked) 2) '("https://mail.example.com/profile" "GET")))
+            (should-not (nth 4 (car asked)))
+            (setq answers '(("403 Forbidden" "{\"error\":{\"code\":403,\"message\":\"Gmail API has not been used in project 1 before or it is disabled.\"}}")))
+            (should (string-match-p "\\`The server refused: Gmail API has not been used"
+                                    (plist-get (lispm-mail-worker--check (list :smtp smtp)) :smtp))))
+        (delete-file file)))))
+
+(ert-deftest lispm-mail-test-sign-in-sends-through-api ()
+  "Signing in with Google, mail is sent through Gmail's API; with
+Microsoft, through its SMTP server."
+  (let ((lispm-mail-google-client-id "google")
+        (lispm-mail-microsoft-client-id "microsoft"))
+    (should (string-prefix-p "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send"
+                             (plist-get (lispm-mail-sign-in-oauth 'google "R") :send-url)))
+    (should (string-prefix-p "https://gmail.googleapis.com/"
+                             (plist-get (lispm-mail-sign-in-oauth 'google "R") :send-check-url)))
+    (should-not (plist-get (lispm-mail-sign-in-oauth 'microsoft "R") :send-url))))
+
 (defun lispm-mail-test-ask (port request)
   "Send REQUEST to PORT on the loopback, as a browser, and return the answer."
   (let* ((buffer (generate-new-buffer " *lispm-mail-test browser*"))
