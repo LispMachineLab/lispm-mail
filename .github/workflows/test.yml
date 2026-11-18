@@ -18,12 +18,8 @@ jobs:
         emacs: ['30.1', '31.1']
     steps:
       - uses: actions/checkout@v7
-      # LispM Kit, with which the windows declare their commands.
-      - uses: actions/checkout@v7
-        with:
-          repository: LispMachineLab/lispm-kit
-          path: .deps/lispm-kit
-      # LispM UI, whose forms the settings are.
+      # LispM UI (including Kit), with which the windows declare their commands
+      # and whose forms the settings are.
       - uses: actions/checkout@v7
         with:
           repository: LispMachineLab/lispm-ui
@@ -32,4 +28,4 @@ jobs:
         with:
           version: ${{ matrix.emacs }}
       - name: Test
-        run: make test compile LISPM_KIT=.deps/lispm-kit LISPM_UI=.deps/lispm-ui
+        run: make test compile LISPM_UI=.deps/lispm-ui
