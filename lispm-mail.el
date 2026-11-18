@@ -4,8 +4,8 @@
 
 ;; Author: Ryan.K
 ;; URL: https://github.com/LispMachineLab/lispm-mail
-;; Version: 0.5.0
-;; Package-Requires: ((emacs "30.1") (lispm-kit "0.1.0") (lispm-ui "0.3.0"))
+;; Version: 0.5.1
+;; Package-Requires: ((emacs "30.1") (lispm-ui "0.8.0"))
 ;; Keywords: mail
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
