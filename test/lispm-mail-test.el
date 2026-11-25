@@ -1303,9 +1303,10 @@ welcome page's Add Account… button, under four of them, missed it."
 
 (ert-deftest lispm-mail-test-prompts-use-lispm-ui ()
   "Mail's prompts, choosers, alerts, and file dialogs route through `lispm-ui'."
-  (let ((lispm-mail-accounts (list lispm-mail-test-account))
-        (calls nil))
-    (cl-letf (((symbol-function 'lispm-mail--mailboxes)
+  (lispm-mail-test-with-home
+    (let ((lispm-mail-accounts (list lispm-mail-test-account))
+          (calls nil))
+      (cl-letf (((symbol-function 'lispm-mail-mailboxes)
                (lambda (_id) '((:name "INBOX" :flags nil) (:name "Work" :flags nil))))
               ((symbol-function 'lispm-mail-show-place)
                (lambda (place) (push (cons 'place place) calls)))
@@ -1356,7 +1357,7 @@ welcome page's Add Account… button, under four of them, missed it."
       (should (assq 'alert calls))
       (should (assq 'choose-dir calls))
       (should (assq 'save-file calls))
-      (should (equal (alist-get 'prompt calls) "Search messages: ")))))
+      (should (equal (alist-get 'prompt calls) "Search messages: "))))))
 
 (provide 'lispm-mail-test)
 ;;; lispm-mail-test.el ends here
