@@ -5,7 +5,7 @@
 ;; Author: Ryan.K
 ;; URL: https://github.com/LispMachineLab/lispm-mail
 ;; Version: 0.5.1
-;; Package-Requires: ((emacs "30.1") (lispm-ui "0.8.0"))
+;; Package-Requires: ((emacs "30.1") (lispm-ui "0.12.0"))
 ;; Keywords: mail
 ;; SPDX-License-Identifier: AGPL-3.0-or-later
 
@@ -57,6 +57,7 @@
 (require 'tabulated-list)
 (require 'lispm-kit-commands)
 (require 'lispm-mail-style)
+(require 'lispm-ui-ask)
 (require 'lispm-ui-text)
 (require 'lispm-mail-accounts)
 (require 'lispm-mail-data)
@@ -822,14 +823,16 @@ This is one of `lispm-mail-watched-functions'."
                  (mapcar (lambda (account)
                            (let ((id (lispm-mail-account-id account)))
                              (mapcar (lambda (mailbox)
-                                       (cons (format "%s — %s" (lispm-mail--mailbox-title id (plist-get mailbox :name))
-                                                     (lispm-mail-account-title account))
-                                             (cons id (plist-get mailbox :name))))
+                                       (cons (cons id (plist-get mailbox :name))
+                                             (format "%s — %s" (lispm-mail--mailbox-title id (plist-get mailbox :name))
+                                                     (lispm-mail-account-title account))))
                                      (seq-filter #'lispm-mail-mailbox-selectable-p
                                                  (lispm-mail-mailboxes id)))))
                          lispm-mail-accounts)))
-         (choice (completing-read "Go to mailbox: " choices nil t)))
-    (lispm-mail-show-place (cdr (assoc choice choices)))))
+         (chosen (lispm-ui-choose choices lispm-mail--place nil "Go to mailbox")))
+    (if chosen
+        (lispm-mail-show-place (car chosen))
+      (signal 'quit nil))))
 
 (defun lispm-mail-get-mail ()
   "Check every account for new mail now."
@@ -851,16 +854,13 @@ Empty words list them all again."
   (interactive
    (let ((before lispm-mail--query))
      (condition-case nil
-         (list (minibuffer-with-setup-hook
-                   (lambda ()
-                     (add-hook 'after-change-functions
-                               (lambda (&rest _)
-                                 (let ((words (minibuffer-contents-no-properties)))
-                                   (setq lispm-mail--query (and (not (string-blank-p words)) words))
-                                   (lispm-mail--draw-list)
-                                   (force-mode-line-update t)))
-                               nil t))
-                 (read-string "Search messages: " lispm-mail--query)))
+         (list (lispm-ui-read-string
+                "Search messages: "
+                :initial lispm-mail--query
+                :on-change (lambda (words)
+                             (setq lispm-mail--query (and (not (string-blank-p words)) words))
+                             (lispm-mail--draw-list)
+                             (force-mode-line-update t))))
        (quit (setq lispm-mail--query before)
              (lispm-mail--draw-list)
              (signal 'quit nil)))))
@@ -971,11 +971,13 @@ They are those selected together, unless ONE, else the one chosen."
 
 (defun lispm-mail-outbox-action (entry)
   "Send ENTRY of the Outbox again, or take it out."
-  (pcase (read-multiple-choice (format "\"%s\": " (plist-get entry :subject))
-                               '((?s "send again" "Try to send it again")
-                                 (?d "delete" "Take it out of the Outbox, unsent")))
-    (`(?s . ,_) (lispm-mail-outbox-send entry))
-    (`(?d . ,_) (lispm-mail-outbox-remove entry))))
+  (pcase (lispm-ui-alert 'note (format "\"%s\"" (plist-get entry :subject))
+                         '(("Delete" delete nil ?d)
+                           ("Cancel" cancel cancel)
+                           ("Send Again" send default ?s))
+                         "Try to send it again, or take it out of the Outbox, unsent.")
+    ('send (lispm-mail-outbox-send entry))
+    ('delete (lispm-mail-outbox-remove entry))))
 
 (defun lispm-mail-delete-message ()
   "Delete the messages chosen: to the Trash, or for good from it."
@@ -1010,9 +1012,12 @@ They are those selected together, unless ONE, else the one chosen."
   "Move the messages chosen to the mailbox TO."
   (interactive
    (let* ((id (car (lispm-mail--targets)))
-          (names (mapcar (lambda (mailbox) (plist-get mailbox :name))
-                         (seq-filter #'lispm-mail-mailbox-selectable-p (lispm-mail-mailboxes id)))))
-     (list (completing-read "Move to: " (remove (cdr lispm-mail--place) names) nil t))))
+          (names (remove (cdr lispm-mail--place)
+                         (mapcar (lambda (mailbox) (plist-get mailbox :name))
+                                 (seq-filter #'lispm-mail-mailbox-selectable-p (lispm-mail-mailboxes id)))))
+          (choices (mapcar (lambda (name) (cons name name)) names))
+          (chosen (lispm-ui-choose choices nil nil "Move to")))
+     (if chosen (list (car chosen)) (signal 'quit nil))))
   (pcase-let ((`(,id ,mailbox ,uids) (lispm-mail--targets)))
     (lispm-mail--after-taking uids)
     (lispm-mail-move id mailbox uids to)))
@@ -1072,8 +1077,10 @@ They are those selected together, unless ONE, else the one chosen."
   (let ((handles (with-current-buffer (lispm-mail--message-buffer)
                    (lispm-mail-view-attachments-here))))
     (unless handles (user-error "The message has no attachments"))
-    (let ((directory (read-directory-name "Save the attachments in: "
-                                          (expand-file-name "~/Downloads/"))))
+    (let ((directory (or (lispm-ui-choose-directory
+                          :title "Save Attachments In"
+                          :directory (expand-file-name "~/Downloads/"))
+                         (signal 'quit nil))))
       (dolist (handle handles)
         (lispm-mail-view-save-attachment
          handle (expand-file-name (file-name-nondirectory (lispm-mail-view-attachment-name handle))

@@ -1301,5 +1301,63 @@ welcome page's Add Account… button, under four of them, missed it."
     (should (string-search "Subject" (buffer-string)))
     (should-not (lispm-mail-test--weightless-blank-lines))))
 
+(ert-deftest lispm-mail-test-prompts-use-lispm-ui ()
+  "Mail's prompts, choosers, alerts, and file dialogs route through `lispm-ui'."
+  (lispm-mail-test-with-home
+    (let ((lispm-mail-accounts (list lispm-mail-test-account))
+          (calls nil))
+      (cl-letf (((symbol-function 'lispm-mail-mailboxes)
+               (lambda (_id) '((:name "INBOX" :flags nil) (:name "Work" :flags nil))))
+              ((symbol-function 'lispm-mail-show-place)
+               (lambda (place) (push (cons 'place place) calls)))
+              ((symbol-function 'lispm-mail-outbox-send)
+               (lambda (entry) (push (cons 'outbox-send entry) calls)))
+              ((symbol-function 'mm-save-part-to-file)
+               (lambda (_h file) (push (cons 'save-att file) calls)))
+              ((symbol-function 'lispm-mail--message-buffer)
+               (lambda () (current-buffer)))
+              ((symbol-function 'lispm-mail-view-attachments-here)
+               (lambda () '(handle-1)))
+              ((symbol-function 'lispm-mail-view-attachment-name)
+               (lambda (_) "report.pdf"))
+              ((symbol-function 'lispm-mail--draw-list) #'ignore)
+              (lispm-ui-choose-function
+               (lambda (choices &rest _)
+                 (push (cons 'choose (mapcar #'cdr choices)) calls)
+                 (list (caar choices))))
+              (lispm-ui-alert-function
+               (lambda (_icon message buttons _detail)
+                 (push (cons 'alert message) calls)
+                 (if (assq 'save (mapcar (lambda (b) (cons (nth 1 b) b)) buttons))
+                     'save
+                   (nth 1 (seq-find (lambda (b) (eq (nth 2 b) 'default)) buttons)))))
+              (lispm-ui-choose-file-function
+               (lambda (&rest args)
+                 (push (cons 'choose-dir args) calls)
+                 "/tmp/"))
+              (lispm-ui-save-file-function
+               (lambda (&rest args)
+                 (push (cons 'save-file args) calls)
+                 "/tmp/report.pdf"))
+              (lispm-ui-form-prompt-function
+               (lambda (prompt &rest args)
+                 (push (cons 'prompt prompt) calls)
+                 (when-let* ((cb (plist-get args :on-change)))
+                   (funcall cb "urgent"))
+                 "urgent")))
+      (lispm-mail-go-to-mailbox)
+      (lispm-mail-outbox-action '(:subject "Draft"))
+      (with-temp-buffer
+        (lispm-mail-save-attachments))
+      (lispm-mail-view--attachment-action 'handle-1)
+      (call-interactively #'lispm-mail-search)
+      (should (equal lispm-mail--query "urgent"))
+      (should (equal (alist-get 'place calls) '("ada" . "INBOX")))
+      (should (assq 'choose calls))
+      (should (assq 'alert calls))
+      (should (assq 'choose-dir calls))
+      (should (assq 'save-file calls))
+      (should (equal (alist-get 'prompt calls) "Search messages: "))))))
+
 (provide 'lispm-mail-test)
 ;;; lispm-mail-test.el ends here

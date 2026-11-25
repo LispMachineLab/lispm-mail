@@ -44,6 +44,7 @@
 (require 'nnheader)
 (require 'lispm-kit-commands)
 (require 'lispm-mail-style)
+(require 'lispm-ui-ask)
 (require 'lispm-ui-text)
 (require 'lispm-mail-accounts)
 (require 'lispm-mail-data)
@@ -178,7 +179,7 @@ It goes in the background; it is kept in the Outbox meanwhile."
   (save-restriction
     (message-narrow-to-headers)
     (when (and (string-blank-p (or (message-fetch-field "subject") ""))
-               (not (y-or-n-p "Send it without a subject? ")))
+               (not (lispm-ui-confirm "Send it without a subject?" nil "Send")))
       (user-error "Not sent")))
   (message-send-and-exit))
 
@@ -277,11 +278,13 @@ with the mailbox and nil, or with nil and what went wrong."
   (interactive)
   (let ((account
          (or account
-             (let* ((choices (mapcar (lambda (account)
-                                       (cons (lispm-mail-compose--from account) account))
+             (let* ((current (and lispm-mail-accounts
+                                  (ignore-errors (lispm-mail-compose--from-account))))
+                    (choices (mapcar (lambda (each)
+                                       (cons each (lispm-mail-compose--from each)))
                                      lispm-mail-accounts))
-                    (choice (completing-read "From: " choices nil t)))
-               (cdr (assoc choice choices))))))
+                    (chosen (lispm-ui-choose choices current nil "From")))
+               (if chosen (car chosen) (signal 'quit nil))))))
     (when account
       (setq lispm-mail-compose--account (lispm-mail-account-id account))
       (save-excursion

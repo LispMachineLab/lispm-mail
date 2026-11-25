@@ -46,6 +46,7 @@
 (require 'svg)
 (require 'browse-url)
 (require 'lispm-mail-style)
+(require 'lispm-ui-ask)
 (require 'lispm-ui-text)
 (require 'lispm-mail-accounts)
 (require 'lispm-mail-data)
@@ -441,7 +442,10 @@ dim the signature."
   (let* ((name (file-name-nondirectory (lispm-mail-view-attachment-name handle)))
          (downloads (seq-find #'file-directory-p
                               (list (expand-file-name "~/Downloads/") (expand-file-name "~/"))))
-         (file (or file (read-file-name (format "Save %s to: " name) downloads nil nil name))))
+         (file (or file
+                   (lispm-ui-save-file :title (format "Save %s" name)
+                                       :directory downloads :name name)
+                   (signal 'quit nil))))
     (when (file-directory-p file)
       (setq file (expand-file-name name file)))
     (mm-save-part-to-file handle file)
@@ -450,11 +454,13 @@ dim the signature."
 
 (defun lispm-mail-view--attachment-action (handle)
   "Ask what to do with HANDLE, an attachment, and do it."
-  (pcase (read-multiple-choice (format "%s: " (lispm-mail-view-attachment-name handle))
-                               '((?o "open" "Open it as the system opens its kind")
-                                 (?s "save" "Save it to a file")))
-    (`(?o . ,_) (lispm-mail-view-open-attachment handle))
-    (`(?s . ,_) (lispm-mail-view-save-attachment handle))))
+  (pcase (lispm-ui-alert 'note (lispm-mail-view-attachment-name handle)
+                         '(("Save…" save nil ?s)
+                           ("Cancel" cancel cancel)
+                           ("Open" open default ?o))
+                         "Open it as the system opens its kind, or save it to a file.")
+    ('open (lispm-mail-view-open-attachment handle))
+    ('save (lispm-mail-view-save-attachment handle))))
 
 (defun lispm-mail-view-insert (file &optional headers inner)
   "Insert the message of FILE drawn, at point.
