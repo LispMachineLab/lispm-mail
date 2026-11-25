@@ -47,6 +47,7 @@
 (require 'subr-x)
 (require 'wid-edit)
 (require 'lispm-kit-commands)
+(require 'lispm-ui-ask)
 (require 'lispm-ui-form)
 (require 'lispm-mail-style)
 (require 'lispm-mail-accounts)
@@ -698,16 +699,18 @@ form's :on-cancel."
 
 (defun lispm-mail-edit-account (account)
   "Edit ACCOUNT, in a form."
-  (interactive (list (let ((choices (mapcar (lambda (account)
-                                              (cons (lispm-mail-account-title account) account))
-                                            lispm-mail-accounts)))
-                       (cdr (assoc (completing-read "Edit account: " choices nil t) choices)))))
+  (interactive (list (let* ((choices (mapcar (lambda (account)
+                                               (cons account (lispm-mail-account-title account)))
+                                             lispm-mail-accounts))
+                            (chosen (lispm-ui-choose choices nil nil "Edit account")))
+                       (if chosen (car chosen) (signal 'quit nil)))))
   (lispm-mail--account-form account))
 
 (defun lispm-mail-remove-account (account)
   "Remove ACCOUNT, its password and the mail kept of it, once asked."
-  (when (yes-or-no-p (format "Remove %s, and the mail kept of it here? "
-                             (lispm-mail-account-title account)))
+  (when (lispm-ui-confirm (format "Remove %s, and the mail kept of it here?"
+                                  (lispm-mail-account-title account))
+                          nil "Remove")
     (let ((id (lispm-mail-account-id account)))
       (lispm-mail-stop-workers id)
       (ignore-errors (lispm-mail-forget-password account))
